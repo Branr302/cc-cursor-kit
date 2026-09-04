@@ -659,7 +659,7 @@ class Pending:
         self.name = name
         self.args = args
         self.event = threading.Event()
-        self.result: str = ""
+        self.result: Any = ""  # str 或 {"content": [...]} 富内容（图片 tool_result）
 
 
 class Session:
@@ -880,13 +880,29 @@ class Session:
                     p = self.pending.get(tid)
                 if p is None:
                     continue
-                p.result = abridge_text(
-                    flatten_content(block.get("content")) or "(empty result)",
-                    TOOL_RESULT_MAX,
-                    "tool_result",
-                )
+                tr_content = block.get("content")
+                # tool_result 含图片时走富内容通道：MCP content 数组原样透传
+                # （SDK _normalize_custom_tool_result 对带 content list 的 Mapping 不包装）
+                tr_images = extract_images(tr_content)
+                if tr_images and isinstance(tr_content, list):
+                    text_part = abridge_text(
+                        flatten_content([b for b in tr_content
+                                         if isinstance(b, dict) and b.get("type") != "image"]),
+                        TOOL_RESULT_MAX, "tool_result",
+                    )
+                    blocks: List[dict] = [{"type": "text", "text": text_part or "(image attached)"}]
+                    blocks.extend(b for b in tr_content
+                                  if isinstance(b, dict) and b.get("type") == "image")
+                    p.result = {"content": blocks}  # type: ignore[assignment]
+                    log(f"tool_result image passthrough: {len(tr_images)} image(s) id={tid[:12]}")
+                else:
+                    p.result = abridge_text(
+                        flatten_content(tr_content) or "(empty result)",
+                        TOOL_RESULT_MAX,
+                        "tool_result",
+                    )
                 if block.get("is_error"):
-                    p.result = "error: " + p.result
+                    p.result = ("error: " + p.result) if isinstance(p.result, str) else p.result
                 p.event.set()
                 fed += 1
         return fed
