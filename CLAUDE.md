@@ -75,11 +75,13 @@
 ## 烟测
 
 ```bash
-./scripts/test-compact-detect.sh   # 不耗 API
-./scripts/test-session-fsm.sh      # 不耗 API：会合/drain/reemit/stale/SSE/图片/取消
-./scripts/test-edge-cases.sh       # 异常矩阵：畸形/超大/并发写（少量 API）
-./scripts/perf-baseline.sh         # 延迟基线门禁（少量 API）
-./scripts/smoke-all.sh             # qa / read / write-edit / glob-grep（:4012）
+./scripts/test-all.sh                 # 一键回归（离线三套件 + smoke）
+./scripts/test-compact-detect.sh      # 不耗 API
+./scripts/test-session-fsm.sh         # 不耗 API：会合/drain/reemit/stale/SSE/图片/取消/bg 识别
+./scripts/test-fault-injection.sh     # 不耗 API：FakeAgent 假上游 16 场景故障注入（慢/429/hang/并发/TTL/compact）
+./scripts/test-edge-cases.sh --fake   # 异常矩阵零成本模式（默认无参打 :4011 真实上游，少量 API）
+./scripts/perf-baseline.sh            # 延迟基线门禁（少量 API）
+./scripts/smoke-all.sh                # qa / read / write-edit / glob-grep（:4012）
 ```
 
 ## 故障排查
@@ -87,7 +89,7 @@
 - **慢**：`bin/bench` 看性能报告（首 token/整轮/工具会合分位数），或 `tail runtime/adapter.log` 看 `first_text_ms`——>5s 是上游波动，<3s 正常
 - **会话坏（no assistant message）**：`/clear` 重开；15M 假窗口下 auto-compact 不触发，长任务每 30-50 轮手动 `/compact`
 - **图片不生效**：看日志有无 `image bridge: N image(s) attached`；没有则说明 CC 没把图片放进 image block（确认 CC 版本 ≥2.1）
-- **ESC 后仍扣费**：看日志应有 `cancel upstream run`；没有则是 adapter 版本旧，重启 adapter
+- **ESC 后仍扣费**：看日志应有 `cancel upstream run`；没有则是 adapter 版本旧，重启 adapter。注意思考期（无文本流出）靠 2s ping 探测断开，macOS TCP 半开最坏 ~6s 才触发取消，属正常
 - **多项目**：默认拒绝串工作区；并行用 `CCA_ADAPTER_PORT=4021 CCA_RUNTIME=runtime/proj2 bin/cc`
 - **模型路由不对**（如 haiku 别名走了 grok-4.6）：查 shell 残留的 `CCA_*_MODEL` 环境变量——`env | grep CCA_`；adapter 继承启动它的 shell 环境，rc 文件与临时 export 都会覆盖默认值
 - **TUI 交互模式**：与 `-p` 对 adapter 完全等价（同一 /v1/messages 协议）；自动化只覆盖到 `-p`，TUI 渲染层（spinner/快捷键）属 CC 客户端行为，首次使用人工过一眼即可
