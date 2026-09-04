@@ -76,7 +76,9 @@
 
 ```bash
 ./scripts/test-compact-detect.sh   # 不耗 API
-./scripts/test-session-fsm.sh      # 不耗 API：会合/drain/reemit/stale/SSE
+./scripts/test-session-fsm.sh      # 不耗 API：会合/drain/reemit/stale/SSE/图片/取消
+./scripts/test-edge-cases.sh       # 异常矩阵：畸形/超大/并发写（少量 API）
+./scripts/perf-baseline.sh         # 延迟基线门禁（少量 API）
 ./scripts/smoke-all.sh             # qa / read / write-edit / glob-grep（:4012）
 ```
 
