@@ -65,6 +65,7 @@
 ## 已知缺口（相对标准 CC）
 
 - 无 Anthropic prompt cache；`unrecognized_model` 提示可能仍在  
+- **15M 假窗口**：CC 2.1.x 对 unknown model（grok-4.6）硬编码 `<total_tokens>15000000</total_tokens>`，`AUTO_COMPACT_WINDOW` / `DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT` 均无效（实测 2.1.260）→ **auto-compact 永不触发，靠手动 `/compact`**；adapter 的 `estimate_tokens` 只影响 `/context` 显示  
 - 图片块无法过 Cursor 文本桥（会留 omitted 占位）  
 - 默认 `bypassPermissions`（可用 `CCA_PERMISSION_MODE=manual` 恢复确认）  
 - 本地补缺的 Glob/Grep 不出现在 CC 工具时间线
