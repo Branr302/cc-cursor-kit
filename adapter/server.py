@@ -10,6 +10,7 @@ import json
 import os
 import queue
 import re
+import sys
 import threading
 import time
 import traceback
@@ -19,7 +20,6 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from cursor_sdk import (
-    Agent,
     AgentOptions,
     CustomTool,
     LocalAgentOptions,
@@ -27,6 +27,13 @@ from cursor_sdk import (
     SendOptions,
     UserMessage,
 )
+
+# 离线测试替身：CCA_FAKE_AGENT=1 时用 FakeAgent 替换真实上游（零 API 消耗）
+if os.environ.get("CCA_FAKE_AGENT", "").strip() in ("1", "true", "yes"):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from fake_agent import FakeAgent as Agent  # type: ignore[no-redef]
+else:
+    from cursor_sdk import Agent
 
 HOST = os.environ.get("CCA_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CCA_ADAPTER_PORT", "4011"))
@@ -1528,7 +1535,9 @@ class Handler(BaseHTTPRequestHandler):
         first_kind = ""
         deadline = time.time() + TURN_TIMEOUT
         while True:
-            idle = 1.5 if calls else 5.0
+            # 思考期 ping 周期 2s：macOS 上客户端断开后第 3 次 write 才抛 BrokenPipe，
+            # 5s 周期意味着 ESC 检测最坏 15s；2s 把它压到 ~6s，ping 开销可忽略。
+            idle = 1.5 if calls else 2.0
             try:
                 ev = sess.events.get(timeout=idle)
             except queue.Empty:
@@ -1745,7 +1754,8 @@ def prewarm_upstream() -> None:
 
 
 def main() -> None:
-    if not os.environ.get("CURSOR_API_KEY"):
+    fake = os.environ.get("CCA_FAKE_AGENT", "").strip() in ("1", "true", "yes")
+    if not fake and not os.environ.get("CURSOR_API_KEY"):
         raise SystemExit("缺少 CURSOR_API_KEY（source .env 或 export）")
     if HOST not in ("127.0.0.1", "localhost", "::1"):
         raise SystemExit(f"拒绝绑定 {HOST}：只允许本机回环")
