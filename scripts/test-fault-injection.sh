@@ -125,8 +125,13 @@ conn.request("POST", "/v1/messages",
 resp = conn.getresponse()
 resp.fp.readline()  # 读到一个 SSE 事件行即确认流已建立（不用 read(64)，会阻塞等满）
 conn.close()    # 模拟 ESC：客户端断开
-time.sleep(8)   # ping 周期 2s；macOS 半开第 3 次 write 才抛 → 最坏 ~6s，留余量
+time.sleep(11)  # macOS 半开检测最坏 ~6s；但 ping 时刻受 TCP 栈影响可能拖到 ~12s
 PY
+# 竞态防护：cancel 日志可能晚于客户端 sleep 结束，循环等它落盘（最多 10s）
+for _ in $(seq 20); do
+  rg -q 'cancel upstream run|client disconnect' "$RT/server.log" && break
+  sleep 0.5
+done
 rg -q 'cancel upstream run|client disconnect' "$RT/server.log" && ok "hang + 断开 → 取消上游" || bad "hang 断开后应 cancel"
 
 # ---------- 7. 并发 user 请求同 session：串行 ----------
@@ -153,6 +158,126 @@ assert total >= 5.5 and all(v > 0 for v in res.values()), f"应串行（total={t
 print(f"PASS 并发串行 total={total:.1f}s（两轮各 ~3s）")
 PY
 [ $? = 0 ] || bad "并发 user 请求应串行"
+
+[ -f "$RT/fake.pid" ] && kill "$(cat "$RT/fake.pid")" 2>/dev/null
+
+# ================= 第二批：会合与时序边界 =================
+
+# ---------- 8. 重复 tool_result（CC 重发 bug）：第二次应 stale 秒回 ----------
+start_fake tool
+python3 - "$BASE" <<'PY'
+import json, sys, urllib.request
+BASE = sys.argv[1]
+def post(body, sid, timeout=30):
+    req = urllib.request.Request(f"{BASE}/v1/messages", data=json.dumps(body).encode(),
+        headers={"content-type": "application/json", "X-Claude-Code-Session-Id": sid})
+    return json.load(urllib.request.urlopen(req, timeout=timeout))
+sid = "fake-dup"
+tools = [{"name": "Bash", "description": "x", "input_schema": {"type": "object", "properties": {}}}]
+r1 = post({"model": "grok-4.6", "max_tokens": 128,
+           "messages": [{"role": "user", "content": "跑"}], "tools": tools}, sid)
+tu = [b for b in r1["content"] if b.get("type") == "tool_use"][0]
+hist = [{"role": "user", "content": "跑"}, {"role": "assistant", "content": r1["content"]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tu["id"], "content": "ok1"}]}]
+r2 = post({"model": "grok-4.6", "max_tokens": 128, "messages": hist, "tools": tools}, sid)
+r3 = post({"model": "grok-4.6", "max_tokens": 128, "messages": hist, "tools": tools}, sid)
+t3 = "".join(b.get("text", "") for b in r3.get("content", []) if b.get("type") == "text")
+assert "Acknowledged" in t3, f"重复 tool_result 应 stale: {t3[:80]}"
+print("PASS 重复 tool_result → stale 安全处理")
+PY
+[ $? = 0 ] || bad "重复 tool_result"
+
+# ---------- 9. 工具结果超时（EXEC_TIMEOUT=2s）：应超时收尾而非死等 ----------
+kill "$(cat "$RT/fake.pid")" 2>/dev/null; sleep 0.3
+(cd "$ROOT" && env -i PATH="$PATH" HOME="$HOME" \
+  CCA_FAKE_AGENT=1 CCA_FAKE_MODE=tool CCA_EXEC_TIMEOUT=2 \
+  CCA_ADAPTER_PORT=$PORT CCA_RUNTIME="$RT" CCA_WORKSPACE="$ROOT" CCA_PREWARM=0 \
+  adapter/.venv/bin/python adapter/server.py >"$RT/server.log" 2>&1 & echo $! > "$RT/fake.pid")
+for _ in $(seq 30); do curl -sf --max-time 1 "$BASE/health" >/dev/null 2>&1 && break; sleep 0.25; done
+python3 - "$BASE" <<'PY'
+import json, sys, time, urllib.request
+BASE = sys.argv[1]
+def post(body, sid, timeout=30):
+    req = urllib.request.Request(f"{BASE}/v1/messages", data=json.dumps(body).encode(),
+        headers={"content-type": "application/json", "X-Claude-Code-Session-Id": sid})
+    return json.load(urllib.request.urlopen(req, timeout=timeout))
+sid = "fake-exec-timeout"
+tools = [{"name": "Bash", "description": "x", "input_schema": {"type": "object", "properties": {}}}]
+t0 = time.time()
+r1 = post({"model": "grok-4.6", "max_tokens": 128,
+           "messages": [{"role": "user", "content": "跑"}], "tools": tools}, sid)
+dt = time.time() - t0
+assert dt < 12, f"应在超时后收尾而非死等（{dt:.1f}s）"
+print(f"PASS 工具超时收尾（{dt:.1f}s，未死等 600s）")
+PY
+[ $? = 0 ] || bad "工具结果超时"
+
+# ---------- 10. bg 隔离端到端：主会话 drain 中，haiku 标题请求不排队秒回 ----------
+start_fake slow 0 4
+python3 - "$BASE" <<'PY'
+import json, sys, threading, time, urllib.request
+BASE = sys.argv[1]
+def post(body, sid, timeout=60):
+    req = urllib.request.Request(f"{BASE}/v1/messages", data=json.dumps(body).encode(),
+        headers={"content-type": "application/json", "X-Claude-Code-Session-Id": sid})
+    return json.load(urllib.request.urlopen(req, timeout=timeout))
+sid = "fake-bg"
+out = {}
+def main_req():
+    post({"model": "grok-4.6", "max_tokens": 8,
+          "messages": [{"role": "user", "content": "主请求慢任务"}]}, sid)
+    out["main"] = time.time()
+t0 = time.time()
+tm = threading.Thread(target=main_req); tm.start()
+time.sleep(0.8)
+post({"model": "claude-haiku-4-5", "max_tokens": 8,
+      "messages": [{"role": "user", "content": "write a title"}]}, sid)
+out["bg_end"] = time.time() - t0
+tm.join()
+main_end = out["main"] - t0
+# 并行：bg 在 0.8s 发出、自身 slow 4s → bg_end≈4.8 < main_end+1；
+# 若被 turn_lock 串行：bg_end ≈ main_end+4 ≈ 8
+assert out["bg_end"] < main_end + 1.5, \
+    f"标题请求疑似排队（bg_end={out['bg_end']:.1f}s main_end={main_end:.1f}s）"
+print(f"PASS bg 隔离：bg_end={out['bg_end']:.1f}s 与主请求并行（main_end={main_end:.1f}s）")
+PY
+[ $? = 0 ] || bad "bg 隔离端到端"
+
+# ---------- 11. 图片桥（fake）：image block → UserMessage 通道 ----------
+start_fake text
+python3 - "$BASE" <<'PY'
+import base64, json, sys, urllib.request
+BASE = sys.argv[1]
+png = base64.b64encode(bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000d4944415478da63fcffff3f030005fe02fea73d815d0000000049454e44ae426082")).decode()
+body = {"model": "grok-4.6", "max_tokens": 8, "messages": [{"role": "user", "content": [
+    {"type": "text", "text": "看图"},
+    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": png}}]}]}
+req = urllib.request.Request(f"{BASE}/v1/messages", data=json.dumps(body).encode(),
+    headers={"content-type": "application/json", "X-Claude-Code-Session-Id": "fake-img"})
+r = json.load(urllib.request.urlopen(req, timeout=30))
+print("图片桥请求 200" if r else "")
+PY
+rg -q 'image bridge: 1 image' "$RT/server.log" && ok "图片桥 image bridge 触发" || bad "图片桥未触发"
+
+# ---------- 12. compact 路径（fake）：摘要轮纯文本非空 ----------
+start_fake text
+python3 - "$BASE" <<'PY'
+import json, sys, urllib.request
+BASE = sys.argv[1]
+body = {"model": "grok-4.6", "max_tokens": 256, "messages": [
+    {"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"},
+    {"role": "user", "content": "Write a detailed summary of the conversation so far. Your task is to create a detailed summary"}]}
+req = urllib.request.Request(f"{BASE}/v1/messages", data=json.dumps(body).encode(),
+    headers={"content-type": "application/json", "X-Claude-Code-Session-Id": "fake-compact"})
+r = json.load(urllib.request.urlopen(req, timeout=30))
+blocks = r.get("content", [])
+assert all(b.get("type") == "text" for b in blocks), f"compact 应纯文本: {blocks}"
+assert "".join(b.get("text", "") for b in blocks).strip(), "compact 摘要不得为空"
+print("PASS compact 摘要轮（纯文本非空）")
+PY
+[ $? = 0 ] || bad "compact 摘要轮"
 
 [ -f "$RT/fake.pid" ] && kill "$(cat "$RT/fake.pid")" 2>/dev/null
 echo
