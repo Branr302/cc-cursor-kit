@@ -82,7 +82,7 @@
 
 ## 故障排查
 
-- **慢**：`tail runtime/adapter.log` 看 `first_text_ms`——>5s 是上游波动，<3s 正常；整轮慢看 `done_ms` 与工具会合 `tool_wait`
+- **慢**：`bin/bench` 看性能报告（首 token/整轮/工具会合分位数），或 `tail runtime/adapter.log` 看 `first_text_ms`——>5s 是上游波动，<3s 正常
 - **会话坏（no assistant message）**：`/clear` 重开；15M 假窗口下 auto-compact 不触发，长任务每 30-50 轮手动 `/compact`
 - **图片不生效**：看日志有无 `image bridge: N image(s) attached`；没有则说明 CC 没把图片放进 image block（确认 CC 版本 ≥2.1）
 - **ESC 后仍扣费**：看日志应有 `cancel upstream run`；没有则是 adapter 版本旧，重启 adapter
