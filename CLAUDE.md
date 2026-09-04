@@ -87,6 +87,7 @@
 - **图片不生效**：看日志有无 `image bridge: N image(s) attached`；没有则说明 CC 没把图片放进 image block（确认 CC 版本 ≥2.1）
 - **ESC 后仍扣费**：看日志应有 `cancel upstream run`；没有则是 adapter 版本旧，重启 adapter
 - **多项目**：默认拒绝串工作区；并行用 `CCA_ADAPTER_PORT=4021 CCA_RUNTIME=runtime/proj2 bin/cc`
+- **TUI 交互模式**：与 `-p` 对 adapter 完全等价（同一 /v1/messages 协议）；自动化只覆盖到 `-p`，TUI 渲染层（spinner/快捷键）属 CC 客户端行为，首次使用人工过一眼即可
 
 ## 目录
 
