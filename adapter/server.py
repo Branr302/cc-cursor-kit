@@ -30,6 +30,7 @@ from cursor_sdk import (
 
 HOST = os.environ.get("CCA_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CCA_ADAPTER_PORT", "4011"))
+_BOOT_TS = time.time()
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TURN_TIMEOUT = int(os.environ.get("CCA_TURN_TIMEOUT", "600"))
 EXEC_TIMEOUT = int(os.environ.get("CCA_EXEC_TIMEOUT", "600"))
@@ -1142,11 +1143,22 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path.rstrip("/") or "/"
         if path == "/health":
+            with SESSIONS_LOCK:
+                n_sess = len(SESSIONS)
+            prewarm = ""
+            try:
+                with open(os.path.join(runtime_dir(), "prewarm.status"), encoding="utf-8") as f:
+                    prewarm = f.read().strip()
+            except OSError:
+                pass
             self._json(200, {
                 "ok": True,
                 "upstream": "cursor-sdk",
                 "default_model": SONNET_MODEL,
                 "workspace": current_workspace(),
+                "sessions": n_sess,
+                "uptime_s": int(time.time() - _BOOT_TS),
+                "prewarm": prewarm,
             })
             return
         if path in ("/v1/models", "/models"):
