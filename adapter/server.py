@@ -1636,7 +1636,8 @@ def prewarm_upstream() -> None:
         if os.environ.get("CCA_PREWARM_SEND", "1").strip().lower() not in ("0", "false", "no"):
             t2 = time.perf_counter()
             try:
-                run = agent.send("hi", SendOptions(model=ModelSelection(id=HAIKU_MODEL)))
+                run = agent.send("hi", SendOptions(model=ModelSelection(
+                    id=os.environ.get("CCA_MODEL_FAST", "composer-2.5"))))
                 for _m in run.messages():
                     pass
                 log(f"prewarm send ok ms={_ms(t2)}")
