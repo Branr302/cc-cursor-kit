@@ -55,6 +55,8 @@ runtime/     # 运行态（gitignore）
 
 机制：同一 session 增量发送（Cursor Agent 持 checkpoint）；分叉检测（compact/clear/rewind 自动重建）；按任务路由模型（短问答 composer-2.5 / 带工具 grok-4.6）；启动预热 bridge + 真实 send。
 
+能力对齐：图片输入（截图/Read 图片，SDK `UserMessage.images` 原生桥）、ESC 中断（断连即 `cancel_run`，不白烧额度）、子代理（Agent 工具独立 session）、多 tool_use 并发会合、`--continue/--resume` 续聊。
+
 ## 烟测
 
 ```bash
