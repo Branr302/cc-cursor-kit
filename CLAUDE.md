@@ -49,7 +49,10 @@
 - `CCA_CONTEXT_HINT` 可改/置空；默认不强制中文（语言跟用户自己的 CLAUDE.md）  
 - 首轮/重建只带必要历史：默认 `CCA_HISTORY_TURNS=6`，compact 续聊 `CCA_HISTORY_TURNS_COMPACT=10`；后续轮不重复注入 hint  
 - 工具集/执行路由变化优先 `Agent.resume` 同一个 Cursor agent 保会话；workspace 变更才 drop/create  
-- 启动默认预热 bridge + custom-tools 回调（`CCA_PREWARM=0` 全关；`CCA_PREWARM_AGENT=0` 只热 bridge；`CCA_PREWARM_WAIT=0` 启动不等预热）  
+- 启动默认预热 bridge + custom-tools 回调 + **真实 send 一次**（`CCA_PREWARM=0` 全关；`CCA_PREWARM_AGENT=0` 只热 bridge；`CCA_PREWARM_SEND=0` 不 send；`CCA_PREWARM_WAIT=0` 启动不等预热）。send 预热把首个请求的 ~5s 上游惰性初始化挪到启动期：首个真实请求首 token 7.4s→2.8s
+- **增量发送**：同一 session 第 2 轮起只发当前轮内容（Cursor Agent 持 checkpoint），首 token 13.7s→1.4s；compact/clear/rewind 触发分叉检测 → drop+重建 agent
+- **模型路由**：有 tools 或长 prompt → `grok-4.6`（smart）；短问答 → `composer-2.5`（fast，`CCA_MODEL_FAST/SMART` 可改）
+- **实测结论**：prompt 大小对上游首 token 几乎无影响（40KB 仅 +0.2s），瓶颈是上游会话建立固定开销 2-3s，非 prefill；多 tool_use 一轮并发会合已验证无死锁（Cursor SDK 并发 execute）  
 - **单开约定**：`:4011` 已健康且 workspace 不同时，`adapter-start` **拒绝静默重启**（避免多项目串扰）；并行请换 `CCA_ADAPTER_PORT` + `CCA_RUNTIME`；烟测用 `CCA_ALLOW_WORKSPACE_SWITCH=1`  
 - 工作区：`bin/cc` 只 export `CCA_WORKSPACE`；`runtime/workspace` marker 由 `adapter-start` 独占写入（冲突拒绝时恢复 `/health` 真值）  
 - adapter 进程启动时 **冻结** workspace：`/health` 与 `current_workspace()` 不跟随外部对 marker 的误写漂移  
