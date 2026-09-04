@@ -18,6 +18,7 @@ run() {
 
 run "compact-detect（离线）" ./scripts/test-compact-detect.sh
 run "session-fsm（离线）" ./scripts/test-session-fsm.sh
+run "fault-injection（FakeAgent 假上游，离线）" ./scripts/test-fault-injection.sh
 run "smoke-all（:4012 隔离）" ./scripts/smoke-all.sh
 
 if [ "${1:-}" = "--online" ]; then
