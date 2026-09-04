@@ -228,5 +228,49 @@ assert not mod.should_run_compaction(1, {
     )}],
 })
 
+# ---- extract_images：CC image block → SDK 线格式 ----
+imgs = mod.extract_images([
+    {"type": "text", "text": "看图"},
+    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}},
+    {"type": "image", "source": {"type": "url", "url": "https://x/y.png"}},  # 无 data，跳过
+    {"type": "tool_result", "tool_use_id": "t1", "content": "x"},
+])
+assert imgs == [{"data": "QUJD", "mimeType": "image/png"}], imgs
+assert mod.extract_images("纯文本") == []
+assert mod.extract_images(None) == []
+
+# ---- has_tool_result_turn：只看末条 user（--continue 回归）----
+# 历史含旧 tool_result，但当前轮是纯文本提问 → False（修复前误判 True → stale）
+assert not mod.Session("fsm:tr").has_tool_result_turn({
+    "messages": [
+        {"role": "user", "content": "读文件"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "old"}]},
+        {"role": "assistant", "content": "读完了"},
+        {"role": "user", "content": "接下来呢"},
+    ]
+})
+# 当前轮是 tool_result → True
+assert mod.Session("fsm:tr2").has_tool_result_turn({
+    "messages": [
+        {"role": "user", "content": "读文件"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "Read", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "data"}]},
+    ]
+})
+
+# ---- cancel_current：有 run 时取消，无 run 时安全 ----
+sess_cancel = mod.Session("fsm:cancel")
+sess_cancel.cancel_current("no run")  # 不抛异常
+class FakeCancelRun:
+    cancelled = False
+    def cancel(self):
+        self.cancelled = True
+fake_run = FakeCancelRun()
+sess_cancel.current_run = fake_run
+sess_cancel.cancel_current("client disconnect")
+assert fake_run.cancelled
+sess_cancel.current_run = None
+
 print("PASS session-fsm")
 PY
