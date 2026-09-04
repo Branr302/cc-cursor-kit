@@ -33,4 +33,5 @@ print(f"ESC 取消: {cancels} 次 · 图片桥: {images} 张 · 分叉重建: {d
 if prewarm:
     print(f"预热 send: 最近 {prewarm[-1]}ms")
 print("\n参考基线（2026-09-04 优化后）: 首 token p50 ≤3s（grok）/ ≤1.6s（composer），增量轮 ≤2s")
+print("上游长尾：grok 偶发 25-125s（排队波动，adapter 无法干预）；整轮 max 高属上游，看 p50/p95")
 PY
