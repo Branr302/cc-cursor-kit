@@ -652,6 +652,7 @@ class Session:
         self.events: "queue.Queue[dict]" = queue.Queue()
         self.pending: Dict[str, Pending] = {}
         self.pending_lock = threading.Lock()
+        self.current_run: Any = None  # 进行中的上游 run；客户端断开时 cancel 防白烧额度
         self.turn_id = 0
         self.turns = 0
         self.last_used = time.time()
@@ -1008,6 +1009,7 @@ class Session:
                     opts = SendOptions(model=send_model, on_delta=on_delta,
                                        local=LocalSendOptions(force=True))
                     run = self.agent.send(prompt, opts)  # type: ignore[union-attr]
+                self.current_run = run
                 err_msg = ""
                 for m in run.messages():
                     if getattr(m, "type", None) == "status":
@@ -1030,8 +1032,21 @@ class Session:
             except Exception as exc:  # noqa: BLE001
                 log(traceback.format_exc())
                 self._put_event({"type": "error", "message": str(exc)[:1500]}, my_id)
+            finally:
+                self.current_run = None
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def cancel_current(self, reason: str) -> None:
+        """客户端断开（ESC/超时）时取消上游 run，避免白烧额度。"""
+        run = self.current_run
+        if run is None:
+            return
+        try:
+            run.cancel()
+            log(f"cancel upstream run reason={reason}")
+        except Exception:  # noqa: BLE001
+            pass
 
     def close(self) -> None:
         self._drop_agent("close")
@@ -1279,6 +1294,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._drain_json(sess, model)
         except Exception as exc:  # noqa: BLE001
             log(traceback.format_exc())
+            # 客户端断开（ESC/超时）：取消上游 run，不再白烧额度
+            if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+                sess.cancel_current("client disconnect")
             with sess.lock:
                 if not sess.pending_count():
                     sess.turn_id += 1
@@ -1450,6 +1468,8 @@ class Handler(BaseHTTPRequestHandler):
         def on_idle() -> None:
             try:
                 self._sse("ping", {"type": "ping"})
+            except (BrokenPipeError, ConnectionResetError):
+                raise  # 客户端断开要传播出去触发 cancel_current，不能吞
             except Exception:  # noqa: BLE001
                 pass
 
