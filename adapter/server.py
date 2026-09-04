@@ -62,7 +62,7 @@ KNOWN_MODELS = {
 
 
 def log(msg: str) -> None:
-    print(f"[cc-adapter] {msg}", flush=True)
+    print(f"{time.strftime('%H:%M:%S')} [cc-adapter] {msg}", flush=True)
 
 
 def _ms(t0: float) -> int:
@@ -683,6 +683,9 @@ class Session:
         self.pending: Dict[str, Pending] = {}
         self.pending_lock = threading.Lock()
         self.current_run: Any = None  # 进行中的上游 run；客户端断开时 cancel 防白烧额度
+        # user 回合串行锁：TUI 会并发发标题生成（haiku）等后台请求，与主请求同 session。
+        # 不串行则后到的 send 撞 active run → force 抢占主 run → 主流被污染、CC 永久等待。
+        self.turn_lock = threading.Lock()
         self.turn_id = 0
         self.turns = 0
         self.last_used = time.time()
@@ -1316,6 +1319,7 @@ class Handler(BaseHTTPRequestHandler):
         action = "error"
         reemit_msg: Optional[dict] = None
         err_msg = ""
+        is_new_turn = False  # 本请求是否要发起新的上游回合（标题生成等并发 user 请求要串行）
         with sess.lock:
             if should_run_compaction(sess.pending_count(), body):
                 action = "compact"
@@ -1345,13 +1349,34 @@ class Handler(BaseHTTPRequestHandler):
                         reemit_msg = sess.pending_as_message(model)
                         action = "reemit"
                     else:
+                        # 新 user 回合：标记后出锁，先拿 turn_lock 再 start_turn——
+                        # 否则并发请求（TUI 标题生成）会先 start_turn 撞 active run 被 force 抢占主流。
+                        is_new_turn = True
+                        action = "drain"
+
+        if is_new_turn:
+            t_queue = time.perf_counter()
+            sess.turn_lock.acquire()  # 排队期不持 sess.lock：tool_result 会合不受影响
+            waited = _ms(t_queue)
+            if waited > 50:
+                log(f"turn_lock queued ms={waited} key={sess.key[:20]}（并发 user 请求已串行）")
+            try:
+                with sess.lock:
+                    # 等待期间会话可能被 clear/compact：重查 pending，有则放弃新发回合走 reemit
+                    if sess.pending_count():
+                        log(f"re-emit {sess.pending_count()} pending tool_use (after queue)")
+                        reemit_msg = sess.pending_as_message(model)
+                        action = "reemit"
+                    else:
                         sess.start_turn(body, model)
                         sess.turns += 1
                         # 15M 假窗口下 auto-compact 永不触发：轮数超阈值日志提醒手动 /compact
                         warn_n = int(os.environ.get("CCA_COMPACT_WARN_TURNS", "40"))
                         if sess.turns == warn_n:
                             log(f"session {sess.key[:20]} reached {warn_n} turns — 建议手动 /compact（auto-compact 不触发）")
-                        action = "drain"
+            except Exception:
+                sess.turn_lock.release()
+                raise
 
         if action == "error":
             self._json(502, {"type": "error", "error": {"type": "api_error", "message": err_msg or "error"}})
@@ -1383,6 +1408,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if action == "reemit":
+            if is_new_turn:
+                # 队列等待期出现了 pending：放弃新发回合，释放锁再走 reemit
+                sess.turn_lock.release()
+                is_new_turn = False
             msg = reemit_msg or text_only_message(model, "OK.")
             if stream:
                 self._begin_sse()
@@ -1412,6 +1441,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # action == drain
+        # turn_lock 已在 start_turn 前获取（见上）；tool_result 回合不持锁——它要及时会合。
         try:
             if stream:
                 self._drain_sse(sess, model)
@@ -1430,6 +1460,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(502, {"type": "error", "error": {"type": "api_error", "message": str(exc)[:1500]}})
             except Exception:  # noqa: BLE001
                 pass
+        finally:
+            if is_new_turn:
+                sess.turn_lock.release()
 
     def _emit_text_sse(self, msg: dict) -> None:
         text = ""

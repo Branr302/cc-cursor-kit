@@ -73,7 +73,30 @@ print("concurrent-edit:", results)
 PY
 check "concurrent-edit 两 session 都返回（不挂死）" $?
 
-# 8. adapter 进程仍健康
+# 8. 并发 user 请求同 session（TUI 标题生成场景）：必须串行，不得互踩
+python3 - <<'PY'
+import json, urllib.request, threading, time
+PORT = 4011
+def ask(sid, text, results, i):
+    body = {"model":"grok-4.6","max_tokens":8,"messages":[{"role":"user","content":text}]}
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}/v1/messages",
+        data=json.dumps(body).encode(),
+        headers={"content-type":"application/json","X-Claude-Code-Session-Id":sid})
+    try:
+        t0=time.time()
+        r = json.load(urllib.request.urlopen(req, timeout=120))
+        txt = ''.join(b.get('text','') for b in r.get('content',[]) if b.get('type')=='text')
+        results[i] = f"ok:{time.time()-t0:.1f}s:{txt[:10]}"
+    except Exception as e:
+        results[i] = f"exc:{e}"
+results = {}
+ts = [threading.Thread(target=ask, args=("conc-user", f"说{k}", results, k)) for k in "12"]
+t0=time.time(); [t.start() for t in ts]; [t.join() for t in ts]
+print(f"concurrent-user: {results} total={time.time()-t0:.1f}s")
+PY
+check "concurrent-user 同 session 串行不互踩" $?
+
+# 9. adapter 进程仍健康
 curl -sf --max-time 3 "$BASE/health" >/dev/null; check "adapter 存活" $?
 
 echo
