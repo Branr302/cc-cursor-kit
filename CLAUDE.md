@@ -41,6 +41,7 @@
 
 - 复盘 / 狂读：`/new`；先 Glob/Grep，再定点 Read  
 - 满了：`/compact` 或新开  
+- **手动 /compact 时机**（auto-compact 因 15M 假窗口永不触发）：长任务每 30-50 轮主动 `/compact`；`/context` 显示不可信（恒 ~15M），看轮数和感觉；出现「no assistant message」即会话已坏，`/clear` 重来  
 - `/compact` 失败（`no assistant message…`）时：当前会话已坏，**`/clear` 或 `/new` 后再用**（adapter 已对摘要轮走无工具纯文本）  
 - 摘要检测只看**末条 user 的 compact 指令**，不扫历史（避免压缩后 `<summary>` 误判整段会话）  
 - 有 pending 时不跑 compact，先会合 tool_result  
