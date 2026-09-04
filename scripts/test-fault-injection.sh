@@ -333,6 +333,73 @@ print(f"PASS compact 不占锁：{done['compact']:.1f}s 完成（主请求 {done
 PY
 [ $? = 0 ] || bad "compact 不占锁"
 
+# ---------- 15. SSE 流式 tool 会合闭环（真实 CC 唯一路径） ----------
+start_fake tool
+python3 - "$BASE" <<'PY'
+import json, sys, urllib.request
+BASE = sys.argv[1]
+
+def sse_events(resp):
+    """按 SSE 规范产出 (event, data)。"""
+    ev, data = None, []
+    for raw in resp.fp:
+        line = raw.decode("utf-8", "replace").rstrip("\n")
+        if line.startswith("event:"):
+            ev = line[6:].strip()
+        elif line.startswith("data:"):
+            data.append(line[5:].strip())
+        elif line == "" and ev:
+            yield ev, "\n".join(data)
+            ev, data = None, []
+
+def post_sse(body, sid, timeout=30):
+    body = dict(body, stream=True)
+    req = urllib.request.Request(f"{BASE}/v1/messages", data=json.dumps(body).encode(),
+        headers={"content-type": "application/json", "X-Claude-Code-Session-Id": sid})
+    return urllib.request.urlopen(req, timeout=timeout)
+
+sid = "fake-sse-tool"
+tools = [{"name": "Bash", "description": "x",
+          "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}}}]
+
+# 第 1 轮（流式）：应看到 content_block_start(tool_use) + input_json_delta 累积出合法 JSON
+resp = post_sse({"model": "grok-4.6", "max_tokens": 128,
+                 "messages": [{"role": "user", "content": "跑命令"}], "tools": tools}, sid)
+tu_id, tu_name, partial, saw_stop = None, None, "", False
+for ev, data in sse_events(resp):
+    if ev == "content_block_start":
+        b = json.loads(data)["content_block"]
+        if b.get("type") == "tool_use":
+            tu_id, tu_name = b["id"], b["name"]
+    elif ev == "content_block_delta":
+        d = json.loads(data)["delta"]
+        if d.get("type") == "input_json_delta":
+            partial += d.get("partial_json", "")
+    elif ev == "message_stop":
+        saw_stop = True
+assert tu_id and tu_name == "Bash", "流式应给出 Bash tool_use block"
+args = json.loads(partial)  # partial_json 累积必须能解析成合法 JSON
+assert saw_stop, "应有 message_stop"
+
+# 第 2 轮（流式回 tool_result）：应收到最终文本
+hist = [{"role": "user", "content": "跑命令"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": tu_id, "name": "Bash", "input": args}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tu_id, "content": "sse-ok-42"}]}]
+resp2 = post_sse({"model": "grok-4.6", "max_tokens": 128, "messages": hist, "tools": tools}, sid)
+final_text, saw_stop2 = "", False
+for ev, data in sse_events(resp2):
+    if ev == "content_block_delta":
+        d = json.loads(data)["delta"]
+        if d.get("type") == "text_delta":
+            final_text += d.get("text", "")
+    elif ev == "message_stop":
+        saw_stop2 = True
+assert "sse-ok-42" in final_text, f"第2轮文本应含工具结果: {final_text[:100]}"
+assert saw_stop2
+print("PASS SSE 流式 tool 会合闭环（tool_use 分片→tool_result→text_delta）")
+PY
+[ $? = 0 ] || bad "SSE 流式 tool 会合"
+
 [ -f "$RT/fake.pid" ] && kill "$(cat "$RT/fake.pid")" 2>/dev/null
 echo
 echo "fault-injection: PASS=$PASS FAIL=$FAIL"
