@@ -105,7 +105,11 @@ def bind_boot_workspace(path: str | None = None) -> str:
     return resolved
 
 
-def resolve_model(name: str | None) -> str:
+def resolve_model(name: str | None, task_hint: str = "") -> str:
+    """按任务类型路由模型：简单任务用 fast，复杂推理用 smart。
+
+    task_hint: "fast" | "smart" | ""（默认按 SONNET_MODEL）
+    """
     raw = (name or "").strip() or SONNET_MODEL
     low = raw.lower()
     if raw in KNOWN_MODELS:
@@ -114,6 +118,11 @@ def resolve_model(name: str | None) -> str:
         return OPUS_MODEL
     if "haiku" in low or "small" in low:
         return HAIKU_MODEL
+    # 任务路由：fast 用 composer-2.5，smart 用 grok-4.6
+    if task_hint == "fast":
+        return os.environ.get("CCA_MODEL_FAST", "composer-2.5")
+    if task_hint == "smart":
+        return os.environ.get("CCA_MODEL_SMART", "grok-4.6")
     return SONNET_MODEL
 
 
@@ -889,6 +898,28 @@ class Session:
         my_id = self.turn_id
         self._flush_events()
         hint = (CONTEXT_HINT or "").strip()
+        real = self._real_messages(body)
+
+        # 分叉检测：CC 历史被 compact/clear/rewind 后，与 Cursor Agent 的 checkpoint 分叉。
+        # 信号：CC 发来的 messages 数量比上次少（rewind/clear），或首条 user 含 <summary>（compact 后续聊）。
+        # 注意：tool_result 轮不算分叉（CC 会在末尾追加 tool_result，数量可能波动）。
+        if self.turns > 0 and real:
+            prev_count = getattr(self, "_last_msg_count", 0)
+            curr_count = len(real)
+            first_user = ""
+            for m in real:
+                if m.get("role") == "user":
+                    first_user = flatten_content(m.get("content")).lower()
+                    break
+            # 数量减少超过 2 才认为 rewind（避免 tool_result 轮误伤）
+            if curr_count < prev_count - 2:
+                log(f"history divergence: msg count {prev_count}→{curr_count}, drop agent")
+                self._drop_agent("history rewound")
+            elif "<summary>" in first_user and "continued from" in first_user:
+                log("history divergence: compact summary detected, drop agent")
+                self._drop_agent("compact summary restart")
+        self._last_msg_count = len(real)
+
         if self.turns == 0:
             system = abridge_system(flatten_content(body.get("system")), SYSTEM_MAX)
             lines: List[str] = []
@@ -897,7 +928,6 @@ class Session:
             if system:
                 lines.extend(["SYSTEM:", system, ""])
             # 首轮 / Agent 重建：只带必要轮次。Agent 复用后不再重复灌历史。
-            real = self._real_messages(body)
             blob = "\n".join(flatten_content(m.get("content")) for m in real[:3]).lower()
             keep_n = HISTORY_TURNS_COMPACT if "<summary>" in blob else HISTORY_TURNS
             keep = real[-keep_n:] if len(real) > keep_n else real
@@ -911,7 +941,7 @@ class Session:
                 lines.append(f"{msg.get('role') or 'user'}: {chunk}")
             prompt = "\n".join(lines).strip()
         else:
-            real = self._real_messages(body)
+            # 增量发送：Cursor Agent 持 checkpoint，只发当前轮内容
             last = real[-1] if real else {}
             prompt = abridge_text(
                 flatten_content(last.get("content")),
@@ -1112,9 +1142,17 @@ class Handler(BaseHTTPRequestHandler):
         return f"{sid}:{aid}"
 
     def _handle_messages(self, body: dict) -> None:
-        model = resolve_model(str(body.get("model") or "") or None)
-        stream = bool(body.get("stream"))
+        # 任务类型推断：有 tools 或长 prompt → smart；短问答 → fast
         tools = [t for t in (body.get("tools") or []) if isinstance(t, dict)]
+        messages = body.get("messages") or []
+        last_content = ""
+        for m in reversed(messages):
+            if isinstance(m, dict) and m.get("role") == "user":
+                last_content = flatten_content(m.get("content"))
+                break
+        task_hint = "smart" if tools or len(last_content) > 500 else "fast"
+        model = resolve_model(str(body.get("model") or "") or None, task_hint)
+        stream = bool(body.get("stream"))
         sess = get_session(self._session_key())
 
         # 短临界区：只做状态机决策；compact / drain 出锁，避免阻塞 tool_result 会合。
