@@ -1067,8 +1067,26 @@ class Session:
                     f"status={getattr(result, 'status', '')} model={model}"
                 )
                 if str(getattr(result, "status", "")).lower() == "error":
-                    self._put_event({"type": "error", "message": err_msg or "upstream run error"}, my_id)
-                    return
+                    # 瞬时错误（限流/超时/5xx）自动重试一次；已产出过文本则不再重试（防重复输出）
+                    transient = any(k in err_msg.lower() for k in (
+                        "rate limit", "429", "timeout", "timed out", "503", "502", "overloaded"))
+                    if transient and not saw_text["v"] and not getattr(self, "_retried", False):
+                        self._retried = True
+                        log(f"transient upstream error, retry once: {err_msg[:120]}")
+                        time.sleep(2)
+                        run2 = self.agent.send(outbound, opts)  # type: ignore[union-attr]
+                        self.current_run = run2
+                        for m in run2.messages():
+                            if getattr(m, "type", None) == "status":
+                                st2 = str(getattr(m, "status", "") or "")
+                                if st2.upper() == "ERROR":
+                                    err_msg = str(getattr(m, "message", "") or "") or err_msg
+                        result = run2.wait()
+                        log(f"retry done_ms={_ms(t_send)} status={getattr(result, 'status', '')}")
+                    self._retried = False
+                    if str(getattr(result, "status", "")).lower() == "error":
+                        self._put_event({"type": "error", "message": err_msg or "upstream run error"}, my_id)
+                        return
                 final = (getattr(result, "result", None) or "").strip()
                 if final and not saw_text["v"]:
                     self._put_event({"type": "text", "text": final}, my_id)
