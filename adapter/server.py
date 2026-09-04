@@ -774,7 +774,7 @@ class Session:
             if local or name in self.local_tools:
                 t0 = time.perf_counter()
                 out = run_local_tool(name, inp, self.workspace or current_workspace())
-                log(f"local_tool {name} ms={_ms(t0)} args={json.dumps(inp, ensure_ascii=False)[:200]}")
+                log(f"local_tool {name} ms={_ms(t0)}")
                 return out
 
             gen = self.turn_id
@@ -785,7 +785,7 @@ class Session:
                     return "error: session reset (stale turn)"
                 self.pending[our_id] = p
             self._put_event({"type": "tool_call", "pending": p}, gen)
-            log(f"tool_call {name} id={our_id[:12]} args={json.dumps(p.args, ensure_ascii=False)[:200]}")
+            log(f"tool_call {name} id={our_id[:12]}")
             t_wait = time.perf_counter()
             if not p.event.wait(timeout=EXEC_TIMEOUT):
                 with self.pending_lock:

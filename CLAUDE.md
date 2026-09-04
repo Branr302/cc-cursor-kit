@@ -50,6 +50,7 @@
 - 首轮/重建只带必要历史：默认 `CCA_HISTORY_TURNS=6`，compact 续聊 `CCA_HISTORY_TURNS_COMPACT=10`；后续轮不重复注入 hint  
 - 工具集/执行路由变化优先 `Agent.resume` 同一个 Cursor agent 保会话；workspace 变更才 drop/create  
 - 启动默认预热 bridge + custom-tools 回调（`CCA_PREWARM=0` 全关；`CCA_PREWARM_AGENT=0` 只热 bridge；`CCA_PREWARM_WAIT=0` 启动不等预热）  
+- **单开约定**：`:4011` 已健康且 workspace 不同时，`adapter-start` **拒绝静默重启**（避免多项目串扰）；并行请换 `CCA_ADAPTER_PORT` + `CCA_RUNTIME`；烟测用 `CCA_ALLOW_WORKSPACE_SWITCH=1`  
 - 工作区：`bin/cc` 把 `runtime/workspace` 写成启动时的 cwd  
 - 烟测默认独立 `:4012` + `runtime/smoke`，不改、不杀日常 `:4011`  
 - `current_workspace()` 读 **当前 `CCA_RUNTIME`/workspace**（烟测与日常互不串）  
@@ -68,6 +69,7 @@
 
 ```bash
 ./scripts/test-compact-detect.sh   # 不耗 API
+./scripts/test-session-fsm.sh      # 不耗 API：会合/drain/reemit/stale/SSE
 ./scripts/smoke-all.sh             # qa / read / write-edit / glob-grep（:4012）
 ```
 

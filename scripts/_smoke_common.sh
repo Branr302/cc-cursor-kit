@@ -37,6 +37,8 @@ smoke_setup() {
     exit 1
   fi
   smoke_isolate
+  # 烟测独占隔离端口；允许同端口在不同临时 workspace 间切换。
+  export CCA_ALLOW_WORKSPACE_SWITCH=1
   export CCA_WORKSPACE="$SMOKE_DIR"
   echo "smoke adapter :${CCA_ADAPTER_PORT:-4011} runtime=${CCA_RUNTIME:-$SMOKE_ROOT/runtime} ws=$SMOKE_DIR"
   bash "$SMOKE_ROOT/bin/adapter-start"

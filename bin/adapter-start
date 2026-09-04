@@ -30,7 +30,7 @@ if [ -z "${CURSOR_API_KEY:-}" ]; then
   exit 1
 fi
 
-# 规范化并写入 workspace 标记（current_workspace() 优先读此文件）
+# 规范化 workspace（current_workspace() 优先读 marker）；冲突时先别改写 marker
 if [ -n "${CCA_WORKSPACE:-}" ] && [ -d "$CCA_WORKSPACE" ]; then
   DESIRED="$(cd "$CCA_WORKSPACE" && pwd)"
 else
@@ -42,22 +42,46 @@ OLD_WS=""
 if [ -f "$MARKER" ]; then
   OLD_WS="$(tr -d '\n' <"$MARKER" || true)"
 fi
-printf '%s\n' "${DESIRED}" >"$MARKER"
+
+health_payload() {
+  curl -sf --max-time 2 "http://${HOST}:${PORT}/health" 2>/dev/null || true
+}
 
 health_ok() {
   curl -sf --max-time 2 "http://${HOST}:${PORT}/health" >/dev/null 2>&1
 }
 
+write_workspace_marker() {
+  printf '%s\n' "${DESIRED}" >"$MARKER"
+}
+
 if health_ok; then
-  if [ -n "${OLD_WS}" ] && [ "${OLD_WS}" != "${DESIRED}" ]; then
-    # 注意：macOS bash 3.2 下不要写 $DESIRED，紧贴中文标点，会被当成变量名
-    echo "workspace 变更: ${OLD_WS} -> ${DESIRED}, 重启 adapter"
-    bash "$ROOT/bin/adapter-stop"
+  LIVE_WS="$(health_payload | python3 -c 'import sys,json
+try:
+  print((json.load(sys.stdin).get("workspace") or "").strip())
+except Exception:
+  print("")' 2>/dev/null || true)"
+  EFFECTIVE_OLD="${LIVE_WS:-$OLD_WS}"
+  if [ -n "${EFFECTIVE_OLD}" ] && [ "${EFFECTIVE_OLD}" != "${DESIRED}" ]; then
+    if [ "${CCA_ALLOW_WORKSPACE_SWITCH:-0}" = "1" ]; then
+      # 注意：macOS bash 3.2 下变量紧贴中文要用 ${VAR}
+      echo "workspace 变更: ${EFFECTIVE_OLD} -> ${DESIRED}, 允许切换并重启 adapter"
+      bash "$ROOT/bin/adapter-stop"
+    else
+      echo "❌ :${PORT} 正被 workspace=${EFFECTIVE_OLD} 占用，拒绝静默切换到 ${DESIRED}" >&2
+      echo "   本 kit 默认单开。若要并行多项目，请另开端口，例如：" >&2
+      echo "   CCA_ADAPTER_PORT=4013 CCA_RUNTIME=$ROOT/runtime/p2 $ROOT/bin/cc" >&2
+      echo "   烟测/明确接管才设 CCA_ALLOW_WORKSPACE_SWITCH=1" >&2
+      exit 1
+    fi
   else
+    write_workspace_marker
     echo "✅ 适配器已在 ${HOST}:${PORT} 运行（/health 正常）· workspace=${DESIRED}"
     exit 0
   fi
 fi
+
+write_workspace_marker
 
 if command -v lsof >/dev/null 2>&1 && lsof -iTCP:"${PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
   echo "❌ 端口 ${PORT} 已被占用，但 /health 未通过。请换 CCA_ADAPTER_PORT 或先 ./bin/adapter-stop" >&2
