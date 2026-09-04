@@ -45,6 +45,16 @@ docs/        # 项目总结与研究对照
 runtime/     # 运行态（gitignore）
 ```
 
+## 性能（2026-09 实测，grok-4.6）
+
+| 场景 | 优化前 | 优化后 |
+|------|--------|--------|
+| 同 session 第 2 轮首 token | 13.7s | 1.4s |
+| 首个真实请求首 token | 7.4s | 2.8s（prewarm send） |
+| 长任务端到端（真实 CC） | 6 分钟+ | 32s |
+
+机制：同一 session 增量发送（Cursor Agent 持 checkpoint）；分叉检测（compact/clear/rewind 自动重建）；按任务路由模型（短问答 composer-2.5 / 带工具 grok-4.6）；启动预热 bridge + 真实 send。
+
 ## 烟测
 
 ```bash
