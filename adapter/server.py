@@ -396,6 +396,11 @@ def abridge_system(system: str, limit: int = SYSTEM_MAX) -> str:
     rest = max(400, limit - core_budget)
     per = max(200, rest // n_sec)
 
+    if len(core) > core_budget:
+        # core 含 CLAUDE.md/用户规则——截断它们必须知情，不能静默
+        log(f"WARNING: system core {len(core)} chars > budget {core_budget}, "
+            f"CLAUDE.md/规则尾部将被截断。调大 CCA_SYSTEM_MAX（当前 {limit}）或精简规则文件。")
+
     parts = []
     if core:
         parts.append(abridge_text(core, core_budget, "system-core"))
@@ -1250,6 +1255,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ts": time.time(),
                     "n_msgs": len(msgs),
                     "last_role": last.get("role"),
+                    "system_chars": len(flatten_content(body.get("system"))),
                     "last_content": content if not isinstance(content, list) else [
                         {k: ("<image omitted>" if k in ("source", "data") else str(v)[:300])
                          for k, v in b.items()}
