@@ -1,8 +1,27 @@
 #!/usr/bin/env bash
-# 异常矩阵：adapter 对畸形/极端输入的鲁棒性（不耗 API 的用例 + 少量真实调用）
+# 异常矩阵：adapter 对畸形/极端输入的鲁棒性
+# 默认打 ${CCA_ADAPTER_PORT:-4011}（真实上游，少量调用）；
+# `--fake` 自起 FakeAgent 实例（:4062），全部用例零 API 消耗、确定性秒回。
 set -uo pipefail
-PORT="${CCA_ADAPTER_PORT:-4011}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+FAKE_PID=""
+if [ "${1:-}" = "--fake" ]; then
+  PORT=4062
+  RT="$ROOT/runtime/edge-fake"
+  mkdir -p "$RT"
+  lsof -ti tcp:$PORT | xargs kill 2>/dev/null; sleep 0.3
+  (cd "$ROOT" && env -i PATH="$PATH" HOME="$HOME" \
+    CCA_FAKE_AGENT=1 CCA_FAKE_MODE=text \
+    CCA_ADAPTER_PORT=$PORT CCA_RUNTIME="$RT" CCA_WORKSPACE="$ROOT" CCA_PREWARM=0 \
+    adapter/.venv/bin/python adapter/server.py >"$RT/server.log" 2>&1 &
+    echo $! > "$RT/fake.pid")
+  FAKE_PID="$(cat "$RT/fake.pid")"
+  for _ in $(seq 40); do curl -sf --max-time 1 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break; sleep 0.25; done
+else
+  PORT="${CCA_ADAPTER_PORT:-4011}"
+fi
 BASE="http://127.0.0.1:${PORT}"
+export CCA_EDGE_PORT="$PORT"   # 透传给内嵌 python（原来硬编码 4011 会打日常实例）
 PASS=0; FAIL=0
 
 check() { # name condition
@@ -53,8 +72,8 @@ code=$(curl -s -o /tmp/edge6.out -w '%{http_code}' --max-time 30 "$BASE/v1/messa
 # 7. 并发写同一文件（两个 session 同时 Edit）
 mkdir -p /tmp/cca-edge && echo "line1" > /tmp/cca-edge/shared.txt
 python3 - <<'PY'
-import json, urllib.request, threading
-PORT = 4011
+import json, os, urllib.request, threading
+PORT = int(os.environ.get("CCA_EDGE_PORT", "4011"))
 def edit(sid, old, new, results, i):
     body = {"model":"grok-4.6","max_tokens":256,"messages":[{"role":"user","content":f"用 Edit 把 /tmp/cca-edge/shared.txt 里的 '{old}' 改成 '{new}'"}],
             "tools":[{"name":"Edit","description":"edit","input_schema":{"type":"object","properties":{"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}}}}]}
@@ -75,8 +94,8 @@ check "concurrent-edit 两 session 都返回（不挂死）" $?
 
 # 8. 并发 user 请求同 session（TUI 标题生成场景）：必须串行，不得互踩
 python3 - <<'PY'
-import json, urllib.request, threading, time
-PORT = 4011
+import json, os, urllib.request, threading, time
+PORT = int(os.environ.get("CCA_EDGE_PORT", "4011"))
 def ask(sid, text, results, i):
     body = {"model":"grok-4.6","max_tokens":8,"messages":[{"role":"user","content":text}]}
     req = urllib.request.Request(f"http://127.0.0.1:{PORT}/v1/messages",
@@ -99,6 +118,7 @@ check "concurrent-user 同 session 串行不互踩" $?
 # 9. adapter 进程仍健康
 curl -sf --max-time 3 "$BASE/health" >/dev/null; check "adapter 存活" $?
 
+[ -n "$FAKE_PID" ] && kill "$FAKE_PID" 2>/dev/null
 echo
 echo "edge-matrix: PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = "0" ]
