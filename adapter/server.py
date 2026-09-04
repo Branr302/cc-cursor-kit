@@ -1300,6 +1300,10 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         sess.start_turn(body, model)
                         sess.turns += 1
+                        # 15M 假窗口下 auto-compact 永不触发：轮数超阈值日志提醒手动 /compact
+                        warn_n = int(os.environ.get("CCA_COMPACT_WARN_TURNS", "40"))
+                        if sess.turns == warn_n:
+                            log(f"session {sess.key[:20]} reached {warn_n} turns — 建议手动 /compact（auto-compact 不触发）")
                         action = "drain"
 
         if action == "error":
