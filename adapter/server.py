@@ -793,6 +793,7 @@ class Session:
             pass
 
     def ensure_agent(self, model: str, tools: List[dict]) -> None:
+        self._last_tools = tools  # bridge 自愈重建时复用最近工具集
         ws = current_workspace()
         expanded = expand_tools(tools)
         cc_names = sorted(
@@ -1142,8 +1143,46 @@ class Session:
                 usage = getattr(result, "usage", None)
                 self._put_event({"type": "turn_end", "usage": usage}, my_id)
             except Exception as exc:  # noqa: BLE001
+                err_s = str(exc)
                 log(traceback.format_exc())
-                self._put_event({"type": "error", "message": str(exc)[:1500]}, my_id)
+                # bridge 僵尸自愈：进程在但 HTTP 服务死（Connection refused）——
+                # close_default_client() 杀旧 bridge，下次 _default_client() 自动重建；
+                # 本 session 的 agent 绑死旧 bridge 必须 drop 重建。只自动一次防死亡循环。
+                low = err_s.lower()
+                bridge_dead = ("connection refused" in low or "connecterror" in low) \
+                    and "bridge" in low
+                if bridge_dead and not getattr(self, "_bridge_healed", False):
+                    self._bridge_healed = True
+                    log("bridge unreachable — healing: close_default_client + drop agent + retry once")
+                    try:
+                        from cursor_sdk import _client as _sdk_client
+                        _sdk_client.close_default_client()
+                    except Exception:  # noqa: BLE001
+                        log(traceback.format_exc())
+                    try:
+                        self._drop_agent("bridge-dead")
+                        self.ensure_agent(model, getattr(self, "_last_tools", []) or [])
+                        run2 = self.agent.send(outbound, opts)  # type: ignore[union-attr]
+                        self.current_run = run2
+                        for m in run2.messages():
+                            if getattr(m, "type", None) == "status":
+                                st2 = str(getattr(m, "status", "") or "")
+                                if st2.upper() == "ERROR":
+                                    err_s = str(getattr(m, "message", "") or "") or err_s
+                        result2 = run2.wait()
+                        log(f"heal retry status={getattr(result2, 'status', '')}")
+                        if str(getattr(result2, "status", "")).lower() != "error":
+                            final = (getattr(result2, "result", None) or "").strip()
+                            if final and not saw_text["v"]:
+                                self._put_event({"type": "text", "text": final}, my_id)
+                            self._put_event(
+                                {"type": "turn_end", "usage": getattr(result2, "usage", None)}, my_id)
+                            self._bridge_healed = False
+                            return
+                    except Exception as exc2:  # noqa: BLE001
+                        log(f"bridge heal failed: {exc2}")
+                        err_s = f"{err_s} (heal failed: {exc2})"[:1500]
+                self._put_event({"type": "error", "message": err_s[:1500]}, my_id)
             finally:
                 self.current_run = None
 
