@@ -11,17 +11,18 @@ PASS=0; FAIL=0
 ok()   { echo "PASS $1"; PASS=$((PASS+1)); }
 bad()  { echo "FAIL $1"; FAIL=$((FAIL+1)); }
 
-start_fake() { # mode
+start_fake() { # mode [rpd] [delay] [extra_env...]
   # 按 PID 文件精确管理（pkill 模式匹配不到——runtime 在环境变量而非命令行）
   [ -f "$RT/fake.pid" ] && kill "$(cat "$RT/fake.pid")" 2>/dev/null && sleep 0.5
   lsof -ti tcp:$PORT | xargs kill 2>/dev/null; sleep 0.3
   mkdir -p "$RT"
+  local mode="$1" rpd="${2:-0}" delay="${3:-5}"; shift 3 2>/dev/null || shift $#
   (cd "$ROOT" && env -i PATH="$PATH" HOME="$HOME" \
-    CCA_FAKE_AGENT=1 CCA_FAKE_MODE="$1" CCA_FAKE_RPD="${2:-0}" CCA_FAKE_DELAY="${3:-5}" \
-    CCA_ADAPTER_PORT=$PORT CCA_RUNTIME="$RT" CCA_WORKSPACE="$ROOT" CCA_PREWARM=0 \
+    CCA_FAKE_AGENT=1 CCA_FAKE_MODE="$mode" CCA_FAKE_RPD="$rpd" CCA_FAKE_DELAY="$delay" \
+    CCA_ADAPTER_PORT=$PORT CCA_RUNTIME="$RT" CCA_WORKSPACE="$ROOT" CCA_PREWARM=0 "$@" \
     adapter/.venv/bin/python adapter/server.py >"$RT/server.log" 2>&1 &
     echo $! > "$RT/fake.pid")
-  # 健康检查 + 实例指纹：确认是新进程（uptime 应很小）
+  # 健康检查 + 实例指纹：uptime 必须小（防止连到未死透的旧实例）
   for _ in $(seq 40); do
     up=$(curl -sf --max-time 1 "$BASE/health" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("uptime_s",999))' 2>/dev/null || echo 999)
     [ "${up:-999}" -lt 15 ] 2>/dev/null && return 0
@@ -188,12 +189,7 @@ PY
 [ $? = 0 ] || bad "重复 tool_result"
 
 # ---------- 9. 工具结果超时（EXEC_TIMEOUT=2s）：应超时收尾而非死等 ----------
-kill "$(cat "$RT/fake.pid")" 2>/dev/null; sleep 0.3
-(cd "$ROOT" && env -i PATH="$PATH" HOME="$HOME" \
-  CCA_FAKE_AGENT=1 CCA_FAKE_MODE=tool CCA_EXEC_TIMEOUT=2 \
-  CCA_ADAPTER_PORT=$PORT CCA_RUNTIME="$RT" CCA_WORKSPACE="$ROOT" CCA_PREWARM=0 \
-  adapter/.venv/bin/python adapter/server.py >"$RT/server.log" 2>&1 & echo $! > "$RT/fake.pid")
-for _ in $(seq 30); do curl -sf --max-time 1 "$BASE/health" >/dev/null 2>&1 && break; sleep 0.25; done
+start_fake tool 0 5 CCA_EXEC_TIMEOUT=2
 python3 - "$BASE" <<'PY'
 import json, sys, time, urllib.request
 BASE = sys.argv[1]
@@ -266,9 +262,11 @@ start_fake text
 python3 - "$BASE" <<'PY'
 import json, sys, urllib.request
 BASE = sys.argv[1]
+# 使用真实 COMPACT_MARKERS 文本，确保走 compaction 路径而非普通 drain
 body = {"model": "grok-4.6", "max_tokens": 256, "messages": [
     {"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"},
-    {"role": "user", "content": "Write a detailed summary of the conversation so far. Your task is to create a detailed summary"}]}
+    {"role": "user", "content": "Your task is to create a detailed summary of this conversation. "
+                                "Respond with text only. Do not call any tools."}]}
 req = urllib.request.Request(f"{BASE}/v1/messages", data=json.dumps(body).encode(),
     headers={"content-type": "application/json", "X-Claude-Code-Session-Id": "fake-compact"})
 r = json.load(urllib.request.urlopen(req, timeout=30))
@@ -278,6 +276,62 @@ assert "".join(b.get("text", "") for b in blocks).strip(), "compact 摘要不得
 print("PASS compact 摘要轮（纯文本非空）")
 PY
 [ $? = 0 ] || bad "compact 摘要轮"
+# 真阳性校验：必须真走了 compaction 分支（fake 模式 Agent.prompt 未实现 → fallback 日志）
+rg -q 'compaction summary|compaction failed|compaction done' "$RT/server.log" \
+  && ok "compact 真走 compaction 分支" || bad "compact 未走 compaction 分支（假阳性）"
+
+# ---------- 13. TTL 过期重建：SESSION_TTL=3s，等 4s 后续聊应重建 agent ----------
+start_fake text 0 5 CCA_SESSION_TTL=3
+python3 - "$BASE" <<'PY'
+import json, sys, time, urllib.request
+BASE = sys.argv[1]
+def post(tag, sid):
+    body = {"model": "grok-4.6", "max_tokens": 8, "messages": [{"role": "user", "content": tag}]}
+    req = urllib.request.Request(f"{BASE}/v1/messages", data=json.dumps(body).encode(),
+        headers={"content-type": "application/json", "X-Claude-Code-Session-Id": sid})
+    return json.load(urllib.request.urlopen(req, timeout=30))
+sid = "fake-ttl"
+post("第一轮", sid)
+time.sleep(4)  # 超过 TTL=3s
+r = post("第二轮", sid)  # 应重建 agent 且正常回答
+assert r.get("content"), "TTL 重建后应正常返回"
+print("PASS TTL 过期后续聊正常")
+PY
+# 两次 created = 首轮创建 + TTL 过期重建（rg multiline 避免 shell 变量问题）
+rg -U -q 'agent created key=fake-ttl[\s\S]*agent created key=fake-ttl' "$RT/server.log" \
+  && ok "TTL 过期触发 agent 重建" || bad "TTL 应重建 agent"
+
+# ---------- 14. compact 不占锁：主会话 slow 进行中，compact 并发完成 ----------
+start_fake slow 0 4
+python3 - "$BASE" <<'PY'
+import json, sys, threading, time, urllib.request
+BASE = sys.argv[1]
+def post(body, sid, timeout=60):
+    req = urllib.request.Request(f"{BASE}/v1/messages", data=json.dumps(body).encode(),
+        headers={"content-type": "application/json", "X-Claude-Code-Session-Id": sid})
+    return json.load(urllib.request.urlopen(req, timeout=timeout))
+sid = "fake-cc"
+done = {}
+t0 = time.time()
+def main_req():
+    post({"model": "grok-4.6", "max_tokens": 8,
+          "messages": [{"role": "user", "content": "慢任务"}]}, sid)
+    done["main"] = time.time() - t0
+tm = threading.Thread(target=main_req); tm.start()
+time.sleep(0.8)
+# 主请求占锁中发 compact：真实 marker 文本 → 走独立一次性 agent，不等主请求
+t1 = time.time()
+post({"model": "grok-4.6", "max_tokens": 128, "messages": [
+    {"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"},
+    {"role": "user", "content": "Your task is to create a detailed summary of this conversation. "
+                                "Respond with text only. Do not call any tools."}]}, sid)
+done["compact"] = time.time() - t0
+tm.join()
+assert done["compact"] < done["main"] + 1.5, \
+    f"compact 应并发不占锁（compact={done['compact']:.1f}s main={done['main']:.1f}s）"
+print(f"PASS compact 不占锁：{done['compact']:.1f}s 完成（主请求 {done['main']:.1f}s）")
+PY
+[ $? = 0 ] || bad "compact 不占锁"
 
 [ -f "$RT/fake.pid" ] && kill "$(cat "$RT/fake.pid")" 2>/dev/null
 echo
