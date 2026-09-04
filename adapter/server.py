@@ -1235,7 +1235,8 @@ class Handler(BaseHTTPRequestHandler):
                     "n_msgs": len(msgs),
                     "last_role": last.get("role"),
                     "last_content": content if not isinstance(content, list) else [
-                        {k: (str(v)[:300] if k == "content" else v) for k, v in b.items()}
+                        {k: ("<image omitted>" if k in ("source", "data") else str(v)[:300])
+                         for k, v in b.items()}
                         for b in content if isinstance(b, dict)
                     ],
                 }
