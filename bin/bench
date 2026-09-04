@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# 解析 adapter.log 输出性能报告：首 token、整轮、工具会合、取消、图片桥
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+LOG="${1:-$ROOT/runtime/adapter.log}"
+[ -f "$LOG" ] || { echo "无日志: $LOG"; exit 1; }
+
+python3 - "$LOG" <<'PY'
+import re, sys, statistics
+
+lines = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+first = [int(m) for m in re.findall(r"first_text_ms=(\d+)", lines)]
+done = [int(m) for m in re.findall(r"upstream done_ms=(\d+)", lines)]
+wait = [int(m) for m in re.findall(r"tool_wait \w+ id=\S+ ms=(\d+)", lines)]
+cancels = len(re.findall(r"cancel upstream run", lines))
+images = sum(int(n) for n in re.findall(r"image bridge: (\d+) image", lines))
+diverge = len(re.findall(r"history divergence", lines))
+prewarm = re.findall(r"prewarm send ok ms=(\d+)", lines)
+
+def stats(name, xs):
+    if not xs:
+        return print(f"{name}: 无数据")
+    xs_sorted = sorted(xs)
+    p50 = xs_sorted[len(xs)//2]
+    p95 = xs_sorted[min(len(xs)-1, int(len(xs)*0.95))]
+    print(f"{name}: n={len(xs)} mean={int(statistics.mean(xs))}ms p50={p50}ms p95={p95}ms max={max(xs)}ms")
+
+print(f"== cc-adapter 性能报告 ==\n日志: {sys.argv[1]}")
+stats("上游首 token", first)
+stats("上游整轮", done)
+stats("工具会合等待", wait)
+print(f"ESC 取消: {cancels} 次 · 图片桥: {images} 张 · 分叉重建: {diverge} 次")
+if prewarm:
+    print(f"预热 send: 最近 {prewarm[-1]}ms")
+print("\n参考基线（2026-09-04 优化后）: 首 token p50 ≤3s（grok）/ ≤1.6s（composer），增量轮 ≤2s")
+PY
