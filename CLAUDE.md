@@ -90,7 +90,7 @@
 - **会话坏（no assistant message）**：`/clear` 重开；15M 假窗口下 auto-compact 不触发，长任务每 30-50 轮手动 `/compact`
 - **图片不生效**：看日志有无 `image bridge: N image(s) attached`；没有则说明 CC 没把图片放进 image block（确认 CC 版本 ≥2.1）
 - **ESC 后仍扣费**：看日志应有 `cancel upstream run`；没有则是 adapter 版本旧，重启 adapter。注意思考期（无文本流出）靠 2s ping 探测断开，macOS TCP 半开最坏 ~6s 才触发取消，属正常
-- **全部请求 502 `Connection refused`**：SDK bridge 子进程僵尸化（进程在、HTTP 服务死，长跑后偶发）。`bin/adapter-stop && bin/adapter-start` 重启即恢复；adapter 暂无自愈，属已知缺口
+- **全部请求 502 `Connection refused`**：SDK bridge 子进程僵尸化（进程在、HTTP 服务死）。adapter 已带**自愈**（检出后自动重建 bridge + agent 重试一次，日志 `bridge unreachable — healing`）；仍失败再 `bin/adapter-stop && bin/adapter-start`
 - **多项目**：默认拒绝串工作区；并行用 `CCA_ADAPTER_PORT=4021 CCA_RUNTIME=runtime/proj2 bin/cc`
 - **模型路由不对**（如 haiku 别名走了 grok-4.6）：查 shell 残留的 `CCA_*_MODEL` 环境变量——`env | grep CCA_`；adapter 继承启动它的 shell 环境，rc 文件与临时 export 都会覆盖默认值
 - **TUI 交互模式**：与 `-p` 对 adapter 完全等价（同一 /v1/messages 协议）；自动化只覆盖到 `-p`，TUI 渲染层（spinner/快捷键）属 CC 客户端行为，首次使用人工过一眼即可
