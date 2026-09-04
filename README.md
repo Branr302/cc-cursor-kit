@@ -49,5 +49,6 @@ runtime/     # 运行态（gitignore）
 
 ```bash
 ./scripts/test-compact-detect.sh   # 不耗 API
+./scripts/test-session-fsm.sh      # 不耗 API：会合 / drain / reemit / stale
 ./scripts/smoke-all.sh             # 问答 / 读 / 写改（不杀日常 :4011）
 ```
