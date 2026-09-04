@@ -94,6 +94,15 @@ export CCA_HOST="${HOST}"
 export CCA_ADAPTER_PORT="${PORT}"
 rm -f "$RUNTIME/prewarm.status"
 
+# 日志截断：超 10MB 时保留尾部 2MB（长期运行防无限增长；启动时做一次，零运行期成本）
+if [ -f "$RUNTIME/adapter.log" ]; then
+  LOG_SIZE=$(stat -f%z "$RUNTIME/adapter.log" 2>/dev/null || echo 0)
+  if [ "$LOG_SIZE" -gt 10485760 ]; then
+    tail -c 2097152 "$RUNTIME/adapter.log" > "$RUNTIME/adapter.log.tmp" && mv "$RUNTIME/adapter.log.tmp" "$RUNTIME/adapter.log"
+    echo "[cc-adapter] log truncated at startup (was ${LOG_SIZE}B)" >> "$RUNTIME/adapter.log"
+  fi
+fi
+
 echo "启动 cc-adapter  @ http://${HOST}:${PORT}  upstream=cursor-sdk workspace=${DESIRED}"
 # 双 fork + setsid：避免被 Cursor agent 壳层收尸（单纯 nohup 不够）
 "$PY" - "$PY" "$ROOT/adapter/server.py" "$RUNTIME/adapter.pid" "$RUNTIME/adapter.log" <<'PY'
