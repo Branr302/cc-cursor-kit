@@ -119,8 +119,9 @@ PY
 for _ in $(seq 1 50); do
   if health_ok; then
     if [ "${CCA_PREWARM_WAIT:-1}" != "0" ]; then
-      # 等后台预热把 bridge/custom-tools 冷启动做完；失败也不阻塞可用性。
-      for _ in $(seq 1 60); do
+      # 等后台预热把 bridge/custom-tools/send 冷启动做完；失败也不阻塞可用性。
+      # prewarm send 后总时长约 13-17s，窗口留到 25s。
+      for _ in $(seq 1 100); do
         [ -f "$RUNTIME/prewarm.status" ] && break
         sleep 0.25
       done
