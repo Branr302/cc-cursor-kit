@@ -19,7 +19,7 @@ rg -q 'error' /tmp/edge1.out 2>/dev/null; check "malformed-json 返回 error 结
 code=$(curl -s -o /tmp/edge2.out -w '%{http_code}' --max-time 30 "$BASE/v1/messages" \
   -H 'content-type: application/json' -H 'X-Claude-Code-Session-Id: edge-empty' \
   -d '{"model":"grok-4.6","max_tokens":16,"messages":[]}')
-[ "$code" != "000" ]; check "empty-messages 不挂起(http=$code)" $?
+[ "$code" = "400" ]; check "empty-messages 快速拒绝(http=$code)" $?
 
 # 3. 缺 model 字段
 code=$(curl -s -o /tmp/edge3.out -w '%{http_code}' --max-time 30 "$BASE/v1/messages" \

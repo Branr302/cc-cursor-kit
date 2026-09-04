@@ -1266,7 +1266,16 @@ class Handler(BaseHTTPRequestHandler):
                     f.write(json.dumps(summary, ensure_ascii=False) + "\n")
             except (OSError, TypeError):
                 pass
-        self._handle_messages(body)
+        # 总兜底：handler 内任何未捕获异常都必须返回 500，绝不能让连接挂起
+        #（曾有 AttributeError 导致 handler 线程崩、客户端超时 000 的教训）
+        try:
+            self._handle_messages(body)
+        except Exception:  # noqa: BLE001
+            log(traceback.format_exc())
+            try:
+                self._json(500, {"type": "error", "error": {"type": "api_error", "message": "adapter internal error"}})
+            except Exception:  # noqa: BLE001
+                pass
 
     def _session_key(self) -> str:
         sid = self.headers.get("X-Claude-Code-Session-Id") or self.headers.get("x-claude-code-session-id") or ""
@@ -1286,6 +1295,21 @@ class Handler(BaseHTTPRequestHandler):
         task_hint = "smart" if tools or len(last_content) > 500 else "fast"
         model = resolve_model(str(body.get("model") or "") or None, task_hint)
         stream = bool(body.get("stream"))
+        # 快速拒绝：无消息或全部空内容——不值得消耗上游调用，上游对空 prompt 会挂起
+        # tool_result 块的存在本身即有效（含 tool_use_id 语义，哪怕结果为空字符串）
+        def _has_payload(m: dict) -> bool:
+            if not isinstance(m, dict):
+                return False
+            c = m.get("content")
+            if isinstance(c, list):
+                for b in c:
+                    if isinstance(b, dict) and b.get("type") in ("tool_result", "tool_use", "image"):
+                        return True
+            return bool(flatten_content(c).strip())
+
+        if not any(_has_payload(m) for m in messages):
+            self._json(400, {"type": "error", "error": {"type": "invalid_request_error", "message": "messages empty or all blank"}})
+            return
         sess = get_session(self._session_key())
 
         # 短临界区：只做状态机决策；compact / drain 出锁，避免阻塞 tool_result 会合。
