@@ -57,6 +57,14 @@ runtime/     # 运行态（gitignore）
 
 能力对齐：图片输入（截图/Read 图片，SDK `UserMessage.images` 原生桥）、ESC 中断（断连即 `cancel_run`，不白烧额度）、子代理（Agent 工具独立 session）、多 tool_use 并发会合、`--continue/--resume` 续聊。
 
+## 鲁棒性（2026-09-04 实测）
+
+- 异常矩阵 9/9：畸形 JSON / 空消息 / 200KB 消息 / 数字 content / 并发写同文件
+- 50 轮长会话无衰减（均值 4.0s）；40 轮自动告警提醒手动 `/compact`
+- TTL 过期自动重建 + 全量重放；分叉（compact/clear/rewind）检测后重建 agent
+- 上游瞬时错误自动重试一次；ESC 取消上游 run 不白烧额度
+- system core 超预算时告警（用户规则不静默截断）
+
 ## 烟测
 
 ```bash
