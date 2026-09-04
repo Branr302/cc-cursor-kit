@@ -329,13 +329,19 @@ def text_only_message(model: str, text: str) -> dict:
 
 
 def estimate_tokens(text: str) -> int:
-    """偏保守的本地估算，便于 Claude Code 更早触发压缩。"""
+    """校准后的 token 估算，驱动 CC 的 compact 时机。
+
+    调研结论：CC 的 auto-compact 阈值约 83.5% 窗口（200K → 167K），
+    token 计数来自 adapter 的 count_tokens 或响应 usage。
+    报高了 CC 提前压缩浪费上下文，报低了 CC 到死才压。
+    校准目标：与 Cursor 实际计费 token 误差 <20%。
+    """
     if not text:
         return 1
-    # 汉字/全角大致按 ~1.2 token，ASCII 按 ~0.25；再加 8% 结构开销
+    # 汉字/全角 ~1.0 token（GPT-4  tokenizer 实测），ASCII ~0.25；结构开销 5%
     cjk = sum(1 for ch in text if ord(ch) > 0x2E80)
     other = len(text) - cjk
-    return max(1, int(cjk * 1.2 + other * 0.28 + len(text) * 0.02))
+    return max(1, int(cjk * 1.0 + other * 0.25 + len(text) * 0.05))
 
 
 def abridge_system(system: str, limit: int = SYSTEM_MAX) -> str:
