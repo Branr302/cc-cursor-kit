@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import threading
 import time
 import traceback
@@ -24,6 +25,7 @@ from cursor_sdk import (
     LocalAgentOptions,
     ModelSelection,
     SendOptions,
+    UserMessage,
 )
 
 HOST = os.environ.get("CCA_HOST", "127.0.0.1")
@@ -452,6 +454,26 @@ def flatten_content(content: Any) -> str:
                     # 未知块至少留类型，避免静默丢能力信号
                     parts.append(f"[{btype} omitted]")
     return "\n".join(p for p in parts if p)
+
+
+def extract_images(content: Any) -> List[dict]:
+    """从 CC 消息 content 提取 base64 图片，转成 SDK UserMessage.images 线格式。
+
+    CC/Anthropic: {"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}
+    SDK 线格式:  {"data": {"data": <b64>, "mimeType": <media>}}（_image_to_proto_wire 兼容 dict 入参）
+    """
+    out: List[dict] = []
+    if not isinstance(content, list):
+        return out
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "image":
+            continue
+        src = block.get("source") if isinstance(block.get("source"), dict) else {}
+        data = src.get("data") or block.get("data") or ""
+        media = src.get("media_type") or block.get("media_type") or "image/png"
+        if data:
+            out.append({"data": data, "mimeType": media})
+    return out
 
 
 def expand_tools(tools: List[dict]) -> List[dict]:
@@ -974,6 +996,22 @@ class Session:
                 prompt = "Continue."
             # CONTEXT_HINT 只在首轮注入；Agent 复用后每轮重复只会增加上游读 prompt 时间。
 
+        # 图片桥：当前轮（末条 user）的 image block 提取为 SDK images，随 prompt 一起 send。
+        # 有图时去掉文本里的 [image omitted] 占位，避免「既收到图又说没图」的矛盾。
+        turn_images: List[dict] = []
+        if real:
+            last_user = next((m for m in reversed(real) if m.get("role") == "user"), None)
+            if last_user is not None:
+                turn_images = extract_images(last_user.get("content"))
+                if turn_images:
+                    prompt = re.sub(
+                        r"\[image [^\]]* omitted: upstream text-only bridge[^\]]*\]\n?",
+                        "",
+                        prompt,
+                    ).strip() or "请看图。"
+                if turn_images:
+                    log(f"image bridge: {len(turn_images)} image(s) attached model={model}")
+
         saw_text = {"v": False}
         t_send = time.perf_counter()
         first_out = {"ms": None}
@@ -1000,15 +1038,19 @@ class Session:
                     on_delta=on_delta,
                     local=LocalSendOptions(force=True) if force else None,
                 )
+                # 有图片时升级为 UserMessage（SDK 原生多模态通道）
+                outbound: Any = (
+                    UserMessage(text=prompt, images=turn_images) if turn_images else prompt
+                )
                 try:
-                    run = self.agent.send(prompt, opts)  # type: ignore[union-attr]
+                    run = self.agent.send(outbound, opts)  # type: ignore[union-attr]
                 except Exception as exc:  # noqa: BLE001
                     if "active run" not in str(exc):
                         raise
                     log("send hit active run, force retry")
                     opts = SendOptions(model=send_model, on_delta=on_delta,
                                        local=LocalSendOptions(force=True))
-                    run = self.agent.send(prompt, opts)  # type: ignore[union-attr]
+                    run = self.agent.send(outbound, opts)  # type: ignore[union-attr]
                 self.current_run = run
                 err_msg = ""
                 for m in run.messages():
