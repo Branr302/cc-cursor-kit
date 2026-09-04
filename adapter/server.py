@@ -878,8 +878,20 @@ class Session:
         return False
 
     def has_tool_result_turn(self, body: dict) -> bool:
-        """有挂起工具时：body 里出现任意 tool_result 就当结果轮（再由 feed 匹配 id）。"""
-        return self.body_has_tool_results(body)
+        """当前轮（最后一条 user 消息）是否含 tool_result。
+
+        不能扫全历史：--continue/--resume 恢复的会话历史里含旧 tool_result，
+        扫描历史会把新的纯文本提问误判为结果轮 → fed=0 → 误回 "Acknowledged."。
+        _real_messages 已过滤 CC 尾部塞的 system 提醒，末条即当前轮。
+        """
+        for msg in reversed(self._real_messages(body)):
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            return isinstance(content, list) and any(
+                isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+            )
+        return False
 
     def pending_as_message(self, model: str) -> dict:
         with self.pending_lock:
