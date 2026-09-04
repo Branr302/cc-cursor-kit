@@ -1503,7 +1503,22 @@ def prewarm_upstream() -> None:
             )
         )
         log(f"prewarm agent ok ms={_ms(t1)}")
-        _prewarm_mark(f"ok bridge_ms={_ms(t0)} agent_ms={_ms(t1)}")
+        # 真实 send 一次极小 prompt：首个 send 有 ~5s 惰性初始化（上游会话建立），
+        # 不预热则落在首个真实请求上。max_tokens=1，成本可忽略。
+        # CCA_PREWARM_SEND=0 可关（省这一次调用）。
+        if os.environ.get("CCA_PREWARM_SEND", "1").strip().lower() not in ("0", "false", "no"):
+            t2 = time.perf_counter()
+            try:
+                run = agent.send("hi", SendOptions(model=ModelSelection(id=SONNET_MODEL)))
+                for _m in run.messages():
+                    pass
+                log(f"prewarm send ok ms={_ms(t2)}")
+                _prewarm_mark(f"ok bridge_ms={_ms(t0)} agent_ms={_ms(t1)} send_ms={_ms(t2)}")
+            except Exception as exc:  # noqa: BLE001
+                log(f"prewarm send failed ms={_ms(t2)}: {exc}")
+                _prewarm_mark(f"send_failed ms={_ms(t2)} err={exc}")
+        else:
+            _prewarm_mark(f"ok bridge_ms={_ms(t0)} agent_ms={_ms(t1)}")
     except Exception as exc:  # noqa: BLE001
         log(f"prewarm agent failed ms={_ms(t1)}: {exc}")
         _prewarm_mark(f"agent_failed ms={_ms(t1)} err={exc}")
