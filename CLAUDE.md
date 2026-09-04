@@ -51,7 +51,8 @@
 - 工具集/执行路由变化优先 `Agent.resume` 同一个 Cursor agent 保会话；workspace 变更才 drop/create  
 - 启动默认预热 bridge + custom-tools 回调（`CCA_PREWARM=0` 全关；`CCA_PREWARM_AGENT=0` 只热 bridge；`CCA_PREWARM_WAIT=0` 启动不等预热）  
 - **单开约定**：`:4011` 已健康且 workspace 不同时，`adapter-start` **拒绝静默重启**（避免多项目串扰）；并行请换 `CCA_ADAPTER_PORT` + `CCA_RUNTIME`；烟测用 `CCA_ALLOW_WORKSPACE_SWITCH=1`  
-- 工作区：`bin/cc` 把 `runtime/workspace` 写成启动时的 cwd  
+- 工作区：`bin/cc` 只 export `CCA_WORKSPACE`；`runtime/workspace` marker 由 `adapter-start` 独占写入（冲突拒绝时恢复 `/health` 真值）  
+- adapter 进程启动时 **冻结** workspace：`/health` 与 `current_workspace()` 不跟随外部对 marker 的误写漂移  
 - 烟测默认独立 `:4012` + `runtime/smoke`，不改、不杀日常 `:4011`  
 - `current_workspace()` 读 **当前 `CCA_RUNTIME`/workspace**（烟测与日常互不串）  
 - compact / drain **不占** session 大锁，避免卡住 tool_result 会合  

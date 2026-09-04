@@ -28,9 +28,8 @@ MODEL="${CCA_SONNET_MODEL:-grok-4.6}"
 OPUS="${CCA_OPUS_MODEL:-grok-4.6}"
 HAIKU="${CCA_HAIKU_MODEL:-grok-4.5}"
 
-# 工作区 = 启动时的 cwd（用户项目），写成绝对路径
+# 工作区 = 启动时的 cwd（用户项目）。只 export；marker 由 adapter-start 独占写入。
 export CCA_WORKSPACE="$(cd "${CCA_WORKSPACE:-$PWD}" && pwd)"
-printf '%s\n' "$CCA_WORKSPACE" >"$RUNTIME/workspace"
 echo "workspace=$CCA_WORKSPACE backend=adapter"
 
 bash "$ROOT/bin/adapter-start"

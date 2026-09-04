@@ -72,6 +72,8 @@ except Exception:
       echo "   本 kit 默认单开。若要并行多项目，请另开端口，例如：" >&2
       echo "   CCA_ADAPTER_PORT=4013 CCA_RUNTIME=$ROOT/runtime/p2 $ROOT/bin/cc" >&2
       echo "   烟测/明确接管才设 CCA_ALLOW_WORKSPACE_SWITCH=1" >&2
+      # 纵深：任何外部预写污染了 marker，都恢复成 /health 真值
+      printf '%s\n' "${EFFECTIVE_OLD}" >"$MARKER"
       exit 1
     fi
   else

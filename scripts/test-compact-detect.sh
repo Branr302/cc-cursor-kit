@@ -191,5 +191,16 @@ try:
 finally:
     mod.Agent = real_agent
 
+# 进程冻结 workspace：外部污染 marker 不得影响 current_workspace/health 口径
+mod.bind_boot_workspace(root)
+polluted = os.path.join(runtime, "workspace")
+with open(polluted, "w", encoding="utf-8") as f:
+    f.write("/tmp\n")
+assert mod.current_workspace() == root, mod.current_workspace()
+assert mod._resolve_workspace() == "/tmp", mod._resolve_workspace()
+other = tempfile.mkdtemp(prefix="cca-ws-")
+mod.bind_boot_workspace(other)
+assert mod.current_workspace() == other
+
 print("PASS compact-detect")
 PY

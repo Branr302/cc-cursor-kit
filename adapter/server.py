@@ -70,7 +70,12 @@ def runtime_dir() -> str:
     return os.environ.get("CCA_RUNTIME") or os.path.join(ROOT, "runtime")
 
 
-def current_workspace() -> str:
+# 进程启动时冻结的工作区。marker 可被外部误写；健康探针与 ensure_agent 必须跟进程绑定值，
+# 不能跟着被污染的 runtime/workspace 漂移。
+_BOOT_WORKSPACE: Optional[str] = None
+
+
+def _resolve_workspace() -> str:
     marker = os.path.join(runtime_dir(), "workspace")
     try:
         with open(marker, encoding="utf-8") as f:
@@ -83,6 +88,21 @@ def current_workspace() -> str:
     if env and os.path.isdir(env):
         return env
     return ROOT
+
+
+def current_workspace() -> str:
+    global _BOOT_WORKSPACE
+    if _BOOT_WORKSPACE and os.path.isdir(_BOOT_WORKSPACE):
+        return _BOOT_WORKSPACE
+    return _resolve_workspace()
+
+
+def bind_boot_workspace(path: str | None = None) -> str:
+    """adapter 进程入口调用一次：之后 current_workspace()/health 不再跟随 marker 漂移。"""
+    global _BOOT_WORKSPACE
+    resolved = path if path and os.path.isdir(path) else _resolve_workspace()
+    _BOOT_WORKSPACE = resolved
+    return resolved
 
 
 def resolve_model(name: str | None) -> str:
@@ -1453,7 +1473,8 @@ def main() -> None:
         raise SystemExit("缺少 CURSOR_API_KEY（source .env 或 export）")
     if HOST not in ("127.0.0.1", "localhost", "::1"):
         raise SystemExit(f"拒绝绑定 {HOST}：只允许本机回环")
-    log(f"listen http://{HOST}:{PORT} workspace={current_workspace()} default={SONNET_MODEL}")
+    ws = bind_boot_workspace()
+    log(f"listen http://{HOST}:{PORT} workspace={ws} default={SONNET_MODEL}")
     threading.Thread(target=prewarm_upstream, daemon=True).start()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     try:
