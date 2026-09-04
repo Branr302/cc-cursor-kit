@@ -1092,8 +1092,13 @@ class Session:
                 )
                 if str(getattr(result, "status", "")).lower() == "error":
                     # 瞬时错误（限流/超时/5xx）自动重试一次；已产出过文本则不再重试（防重复输出）
-                    transient = any(k in err_msg.lower() for k in (
+                    # 例外：带 RPD/日限额字样的 429 重试必败（额度按天重置），重试只会多烧一次请求
+                    low_err = err_msg.lower()
+                    daily_cap = "rpd" in low_err or "per day" in low_err or "daily" in low_err
+                    transient = not daily_cap and any(k in low_err for k in (
                         "rate limit", "429", "timeout", "timed out", "503", "502", "overloaded"))
+                    if daily_cap:
+                        log(f"daily rate cap hit (RPD), no retry: {err_msg[:150]}")
                     if transient and not saw_text["v"] and not getattr(self, "_retried", False):
                         self._retried = True
                         log(f"transient upstream error, retry once: {err_msg[:120]}")
