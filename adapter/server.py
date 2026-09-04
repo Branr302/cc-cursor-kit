@@ -915,9 +915,12 @@ class Session:
             if curr_count < prev_count - 2:
                 log(f"history divergence: msg count {prev_count}→{curr_count}, drop agent")
                 self._drop_agent("history rewound")
+                # 重建 agent 后再继续（turns 重置为 0，走首轮全量）
+                self.ensure_agent(model, [])
             elif "<summary>" in first_user and "continued from" in first_user:
                 log("history divergence: compact summary detected, drop agent")
                 self._drop_agent("compact summary restart")
+                self.ensure_agent(model, [])
         self._last_msg_count = len(real)
 
         if self.turns == 0:
