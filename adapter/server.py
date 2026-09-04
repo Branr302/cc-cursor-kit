@@ -140,7 +140,9 @@ GLOB_MAX = 500
 # 空字符串可关掉。默认只提醒省上下文，不改语言/工具偏好（语言跟用户 CLAUDE.md）。
 _DEFAULT_CONTEXT_HINT = (
     "Context is scarce. Prefer Grep/Glob with tight patterns before Read; "
-    "when Reading, pass limit/offset and only paths you must see."
+    "when Reading, pass limit/offset and only paths you must see. "
+    "If you intend to call multiple tools and there are no dependencies "
+    "between the calls, make all of the independent calls in the same turn."
 )
 CONTEXT_HINT = os.environ.get("CCA_CONTEXT_HINT", _DEFAULT_CONTEXT_HINT)
 
