@@ -272,5 +272,22 @@ sess_cancel.cancel_current("client disconnect")
 assert fake_run.cancelled
 sess_cancel.current_run = None
 
+# ---- is_background_request：TUI 标题生成识别 ----
+# 标题请求：haiku 别名 + 单条 + 无 CC 工具 → 隔离
+assert mod.is_background_request("claude-haiku-4-5", [{"role": "user", "content": "write a title"}], [])
+# 用户正常首轮：sonnet 别名 + 带工具 → 不隔离
+assert not mod.is_background_request(
+    "claude-sonnet-4-5", [{"role": "user", "content": "hi"}], [{"name": "Bash"}])
+# 用户手动切 haiku 对话但带工具 → 不隔离（是真对话）
+assert not mod.is_background_request(
+    "claude-haiku-4-5", [{"role": "user", "content": "hi"}], [{"name": "Read"}])
+# haiku 多轮对话 → 不隔离
+assert not mod.is_background_request(
+    "claude-haiku-4-5",
+    [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}, {"role": "user", "content": "c"}],
+    [])
+# grok 直连不算后台
+assert not mod.is_background_request("grok-4.6", [{"role": "user", "content": "t"}], [])
+
 print("PASS session-fsm")
 PY

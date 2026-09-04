@@ -241,6 +241,19 @@ def should_run_compaction(pending_count: int, body: dict) -> bool:
     return is_summarization_request(body)
 
 
+def is_background_request(raw_model: str, real_msgs: List[dict], cc_tools: List[dict]) -> bool:
+    """CC TUI 的后台辅助请求（标题生成等）：haiku 别名 + 单条消息 + CC 未下发工具。
+
+    这类请求必须隔离出主 session：否则 ① 触发 divergence 误判（N→1）drop 主 agent，
+    毁增量 checkpoint；② 占 turn_lock 拖慢主请求。
+    """
+    return (
+        "haiku" in (raw_model or "").lower()
+        and len(real_msgs) <= 1
+        and not cc_tools
+    )
+
+
 def build_summarization_prompt(body: dict) -> str:
     system = abridge_system(flatten_content(body.get("system")), min(4000, SYSTEM_MAX))
     real = [
@@ -1318,7 +1331,12 @@ class Handler(BaseHTTPRequestHandler):
         if not any(_has_payload(m) for m in messages):
             self._json(400, {"type": "error", "error": {"type": "invalid_request_error", "message": "messages empty or all blank"}})
             return
-        sess = get_session(self._session_key())
+
+        # 后台辅助请求隔离（标题生成等）：独立 :bg session，不碰主会话 agent 与 turn_lock
+        raw_model = str(body.get("model") or "")
+        real_msgs = [m for m in messages if isinstance(m, dict) and m.get("role") in ("user", "assistant")]
+        sess_key = self._session_key() + (":bg" if is_background_request(raw_model, real_msgs, tools) else "")
+        sess = get_session(sess_key)
 
         # 短临界区：只做状态机决策；compact / drain 出锁，避免阻塞 tool_result 会合。
         action = "error"
