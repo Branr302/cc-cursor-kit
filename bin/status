@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PORT="${CCA_ADAPTER_PORT:-4011}"
+echo "== adapter (:$PORT) =="
+if curl -sf --max-time 2 "http://127.0.0.1:${PORT}/health" >/dev/null; then
+  curl -sS "http://127.0.0.1:${PORT}/health"
+  echo
+else
+  echo "未运行。执行: $ROOT/bin/adapter-start 或 $ROOT/bin/cc"
+fi
+if [ -f "$ROOT/runtime/workspace" ]; then
+  echo "workspace marker: $(tr -d '\n' <"$ROOT/runtime/workspace")"
+fi
+if [ -f "$ROOT/.env" ] || [ -n "${CURSOR_API_KEY:-}" ]; then
+  echo "CURSOR_API_KEY: 已配置"
+else
+  echo "CURSOR_API_KEY: 缺失（见 $ROOT/.env.example）"
+fi

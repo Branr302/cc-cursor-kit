@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# 起 adapter + 用 Cursor profile 启动 Claude Code
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+RUNTIME="${CCA_RUNTIME:-$ROOT/runtime}"
+mkdir -p "$RUNTIME"
+ENV_FILE="${CCA_ENV:-$ROOT/.env}"
+PROFILE_SRC="$ROOT/profiles/cursor.json"
+
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+# 兼容旧参数：--adapter 忽略；--proxy 直接拒绝
+if [ "${1:-}" = "--adapter" ]; then
+  shift
+elif [ "${1:-}" = "--proxy" ]; then
+  echo "❌ proxy 路径已移除。请用: $ROOT/bin/cc（Cursor SDK adapter）" >&2
+  echo "   需要 CURSOR_API_KEY，见 $ROOT/.env.example" >&2
+  exit 1
+fi
+
+PORT="${CCA_ADAPTER_PORT:-4011}"
+MODEL="${CCA_SONNET_MODEL:-grok-4.6}"
+OPUS="${CCA_OPUS_MODEL:-grok-4.6}"
+HAIKU="${CCA_HAIKU_MODEL:-grok-4.5}"
+
+# 工作区 = 启动时的 cwd（用户项目），写成绝对路径
+export CCA_WORKSPACE="$(cd "${CCA_WORKSPACE:-$PWD}" && pwd)"
+printf '%s\n' "$CCA_WORKSPACE" >"$RUNTIME/workspace"
+echo "workspace=$CCA_WORKSPACE backend=adapter"
+
+bash "$ROOT/bin/adapter-start"
+
+CLAUDE_BIN="$(command -v claude || true)"
+if [ -z "$CLAUDE_BIN" ] && [ -x /opt/homebrew/lib/node_modules/.bin/claude ]; then
+  CLAUDE_BIN=/opt/homebrew/lib/node_modules/.bin/claude
+fi
+if [ -z "$CLAUDE_BIN" ]; then
+  echo "❌ 未找到 claude（Claude Code CLI）" >&2
+  exit 1
+fi
+
+SETTINGS="$RUNTIME/claude-settings.cursor.json"
+PORT="$PORT" MODEL="$MODEL" OPUS="$OPUS" HAIKU="$HAIKU" PROFILE_SRC="$PROFILE_SRC" SETTINGS="$SETTINGS" python3 - <<'PY'
+import json, os
+src = os.environ["PROFILE_SRC"]
+dst = os.environ["SETTINGS"]
+port = os.environ["PORT"]
+model = os.environ["MODEL"]
+opus = os.environ["OPUS"]
+haiku = os.environ["HAIKU"]
+with open(src, encoding="utf-8") as f:
+    data = json.load(f)
+env = data.setdefault("env", {})
+base = f"http://127.0.0.1:{port}"
+env["ANTHROPIC_BASE_URL"] = base
+env["ANTHROPIC_API_KEY"] = "cc-cursor-kit"
+env.pop("ANTHROPIC_AUTH_TOKEN", None)
+env["ANTHROPIC_MODEL"] = model
+env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = opus
+env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
+env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = haiku
+env["ANTHROPIC_SMALL_FAST_MODEL"] = haiku
+env["CLAUDE_CODE_SUBAGENT_MODEL"] = haiku
+env["CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"] = "1"
+data["model"] = model
+with open(dst, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+PY
+
+unset ANTHROPIC_AUTH_TOKEN
+export ANTHROPIC_API_KEY="cc-cursor-kit"
+export ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT"
+export ANTHROPIC_MODEL="$MODEL"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$OPUS"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$HAIKU"
+export ANTHROPIC_SMALL_FAST_MODEL="$HAIKU"
+export CLAUDE_CODE_SUBAGENT_MODEL="$HAIKU"
+export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1
+export CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+export CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1
+
+echo "▶ Claude Code · model=$MODEL · base=$ANTHROPIC_BASE_URL"
+
+# 默认跳过逐条授权（本机 kit 自用）。要回手动确认：
+#   CCA_PERMISSION_MODE=manual ./bin/cc
+# 或启动后 Shift+Tab 切换模式。
+PERM_MODE="${CCA_PERMISSION_MODE:-bypassPermissions}"
+exec "$CLAUDE_BIN" --settings "$SETTINGS" --model "$MODEL" \
+  --permission-mode "$PERM_MODE" "$@"

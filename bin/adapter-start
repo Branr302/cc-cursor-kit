@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# 启动 SDK 适配器（上游：Cursor SDK 长会话 + customTools 结构化桥）
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+RUNTIME="${CCA_RUNTIME:-$ROOT/runtime}"
+mkdir -p "$RUNTIME"
+
+ENV_FILE="${CCA_ENV:-$ROOT/.env}"
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+HOST="${CCA_HOST:-127.0.0.1}"
+PORT="${CCA_ADAPTER_PORT:-4011}"
+PY="$ROOT/adapter/.venv/bin/python"
+
+if [ ! -x "$PY" ]; then
+  echo "缺少 adapter venv，正在执行 $ROOT/bin/setup …"
+  bash "$ROOT/bin/setup"
+fi
+if [ ! -x "$PY" ]; then
+  echo "❌ setup 后仍无 $PY" >&2
+  exit 1
+fi
+if [ -z "${CURSOR_API_KEY:-}" ]; then
+  echo "❌ 缺少 CURSOR_API_KEY（写进 $ROOT/.env）" >&2
+  exit 1
+fi
+
+# 规范化并写入 workspace 标记（current_workspace() 优先读此文件）
+if [ -n "${CCA_WORKSPACE:-}" ] && [ -d "$CCA_WORKSPACE" ]; then
+  DESIRED="$(cd "$CCA_WORKSPACE" && pwd)"
+else
+  DESIRED="$ROOT"
+fi
+export CCA_WORKSPACE="${DESIRED}"
+MARKER="$RUNTIME/workspace"
+OLD_WS=""
+if [ -f "$MARKER" ]; then
+  OLD_WS="$(tr -d '\n' <"$MARKER" || true)"
+fi
+printf '%s\n' "${DESIRED}" >"$MARKER"
+
+health_ok() {
+  curl -sf --max-time 2 "http://${HOST}:${PORT}/health" >/dev/null 2>&1
+}
+
+if health_ok; then
+  if [ -n "${OLD_WS}" ] && [ "${OLD_WS}" != "${DESIRED}" ]; then
+    # 注意：macOS bash 3.2 下不要写 $DESIRED，紧贴中文标点，会被当成变量名
+    echo "workspace 变更: ${OLD_WS} -> ${DESIRED}, 重启 adapter"
+    bash "$ROOT/bin/adapter-stop"
+  else
+    echo "✅ 适配器已在 ${HOST}:${PORT} 运行（/health 正常）· workspace=${DESIRED}"
+    exit 0
+  fi
+fi
+
+if command -v lsof >/dev/null 2>&1 && lsof -iTCP:"${PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "❌ 端口 ${PORT} 已被占用，但 /health 未通过。请换 CCA_ADAPTER_PORT 或先 ./bin/adapter-stop" >&2
+  exit 1
+fi
+
+export CCA_HOST="${HOST}"
+export CCA_ADAPTER_PORT="${PORT}"
+rm -f "$RUNTIME/prewarm.status"
+
+echo "启动 cc-adapter  @ http://${HOST}:${PORT}  upstream=cursor-sdk workspace=${DESIRED}"
+# 双 fork + setsid：避免被 Cursor agent 壳层收尸（单纯 nohup 不够）
+"$PY" - "$PY" "$ROOT/adapter/server.py" "$RUNTIME/adapter.pid" "$RUNTIME/adapter.log" <<'PY'
+import os, sys
+py, script, pid_path, log_path = sys.argv[1:5]
+if os.fork() > 0:
+    raise SystemExit(0)
+os.setsid()
+if os.fork() > 0:
+    raise SystemExit(0)
+log = open(log_path, "a", buffering=1)
+os.dup2(log.fileno(), 1)
+os.dup2(log.fileno(), 2)
+try:
+    os.close(0)
+except OSError:
+    pass
+with open(pid_path, "w", encoding="utf-8") as f:
+    f.write(str(os.getpid()))
+os.execv(py, [py, script])
+PY
+
+for _ in $(seq 1 50); do
+  if health_ok; then
+    if [ "${CCA_PREWARM_WAIT:-1}" != "0" ]; then
+      # 等后台预热把 bridge/custom-tools 冷启动做完；失败也不阻塞可用性。
+      for _ in $(seq 1 60); do
+        [ -f "$RUNTIME/prewarm.status" ] && break
+        sleep 0.25
+      done
+      if [ -f "$RUNTIME/prewarm.status" ]; then
+        echo "预热: $(tr -d '\n' <"$RUNTIME/prewarm.status")"
+      else
+        echo "预热未完成，先继续（后台仍在跑）"
+      fi
+    fi
+    echo "✅ 已启动 (PID $(cat "$RUNTIME/adapter.pid")) · 日志 $RUNTIME/adapter.log"
+    exit 0
+  fi
+  sleep 0.2
+done
+
+echo "❌ 启动超时（/health 未就绪），见 $RUNTIME/adapter.log" >&2
+exit 1

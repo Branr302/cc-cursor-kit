@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# 不经 Claude Code：直接官方 agent（同一份订阅）
+set -euo pipefail
+if ! command -v agent >/dev/null 2>&1; then
+  echo "未找到 agent" >&2
+  exit 1
+fi
+exec agent --trust "$@"

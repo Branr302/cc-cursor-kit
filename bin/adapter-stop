@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+RUNTIME="${CCA_RUNTIME:-$ROOT/runtime}"
+ENV_FILE="${CCA_ENV:-$ROOT/.env}"
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+PORT="${CCA_ADAPTER_PORT:-4011}"
+PID_FILE="$RUNTIME/adapter.pid"
+
+if [ -f "$PID_FILE" ]; then
+  PID="$(cat "$PID_FILE")"
+  if kill -0 "$PID" >/dev/null 2>&1; then
+    kill "$PID" >/dev/null 2>&1 || true
+    sleep 0.3
+    kill -9 "$PID" >/dev/null 2>&1 || true
+    echo "已停止 PID $PID"
+  fi
+  rm -f "$PID_FILE"
+fi
+
+if command -v lsof >/dev/null 2>&1; then
+  PIDS="$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)"
+  if [ -n "$PIDS" ]; then
+    echo "$PIDS" | xargs kill >/dev/null 2>&1 || true
+    echo "已释放端口 $PORT"
+  fi
+fi

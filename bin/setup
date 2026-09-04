@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# 一次性：建 venv、装 cursor-sdk、必要时复制 .env.example
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PY_VER="${CCA_PYTHON:-3.12}"
+VENV="$ROOT/adapter/.venv"
+REQ="$ROOT/adapter/requirements.txt"
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "❌ 需要 uv：https://docs.astral.sh/uv/" >&2
+  exit 1
+fi
+
+if [ ! -x "$VENV/bin/python" ]; then
+  echo "创建 venv ($PY_VER) → $VENV"
+  uv venv --python "$PY_VER" "$VENV"
+fi
+
+echo "安装依赖 $REQ"
+uv pip install --python "$VENV/bin/python" -r "$REQ"
+
+if [ ! -f "$ROOT/.env" ]; then
+  cp "$ROOT/.env.example" "$ROOT/.env"
+  echo "已创建 $ROOT/.env — 请填入 CURSOR_API_KEY"
+else
+  echo ".env 已存在"
+fi
+
+echo "✅ setup 完成。下一步: 编辑 .env 后，在目标项目目录执行 $ROOT/bin/cc"
